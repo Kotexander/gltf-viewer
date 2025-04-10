@@ -1,11 +1,22 @@
+mod camera;
+mod cubemap;
+
+use camera::OrbitCamera;
+use cubemap::CubemapRenderer;
+use image::EncodableLayout;
 use std::sync::Arc;
 use vulkano::{
+    DeviceSize,
+    buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassBeginInfo,
-        SubpassContents, allocator::StandardCommandBufferAllocator,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
+        PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
+        allocator::StandardCommandBufferAllocator,
     },
-    device::{Device, DeviceExtensions},
+    descriptor_set::{DescriptorSet, allocator::StandardDescriptorSetAllocator},
+    device::{Device, DeviceExtensions, Queue},
     format::Format,
+    image::{Image, ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
     instance::{
         InstanceCreateInfo,
         debug::{
@@ -13,19 +24,8 @@ use vulkano::{
             DebugUtilsMessengerCreateInfo,
         },
     },
-    pipeline::{
-        DynamicState, GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
-        graphics::{
-            GraphicsPipelineCreateInfo,
-            color_blend::{ColorBlendAttachmentState, ColorBlendState},
-            input_assembly::InputAssemblyState,
-            multisample::MultisampleState,
-            rasterization::RasterizationState,
-            vertex_input::VertexInputState,
-            viewport::{Viewport, ViewportState},
-        },
-        layout::PipelineDescriptorSetLayoutCreateInfo,
-    },
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    pipeline::graphics::viewport::Viewport,
     render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     swapchain::Surface,
     sync::GpuFuture,
@@ -75,10 +75,17 @@ fn debug_info() -> DebugUtilsMessengerCreateInfo {
     }
 }
 
+#[derive(Clone)]
+struct Allocators {
+    cmd: Arc<StandardCommandBufferAllocator>,
+    mem: Arc<StandardMemoryAllocator>,
+    set: Arc<StandardDescriptorSetAllocator>,
+}
+
 struct App {
     context: VulkanoContext,
     windows: VulkanoWindows,
-    cmd_buf_alloc: Arc<StandardCommandBufferAllocator>,
+    allocators: Allocators,
     triangle: Option<Triangle>,
 }
 impl App {
@@ -110,22 +117,43 @@ impl App {
             context.device().clone(),
             Default::default(),
         ));
+        let set_alloc = Arc::new(StandardDescriptorSetAllocator::new(
+            context.device().clone(),
+            Default::default(),
+        ));
+
+        let allocators = Allocators {
+            cmd: cmd_buf_alloc,
+            mem: context.memory_allocator().clone(),
+            set: set_alloc,
+        };
 
         Self {
             context,
             windows,
-            cmd_buf_alloc,
+            allocators,
             triangle: None,
         }
     }
 }
 impl ApplicationHandler for App {
     fn resumed(&mut self, event_loop: &ActiveEventLoop) {
-        // self.rcx = Some(Triangle::new(&self.instance, &self.device, event_loop))
-        self.windows
-            .create_window(event_loop, &self.context, &Default::default(), |_| {});
+        self.windows.create_window(
+            event_loop,
+            &self.context,
+            &Default::default(),
+            |swapchain_info| {
+                swapchain_info.image_format = Format::R8G8B8A8_SRGB;
+            },
+        );
+
         let triangle = Triangle::new(
-            self.context.device(),
+            self.context.device().clone(),
+            self.context
+                .transfer_queue()
+                .unwrap_or(self.context.graphics_queue())
+                .clone(),
+            self.allocators.clone(),
             self.windows
                 .get_primary_renderer()
                 .unwrap()
@@ -167,7 +195,7 @@ impl ApplicationHandler for App {
                         .unwrap();
 
                         let mut builder = AutoCommandBufferBuilder::primary(
-                            self.cmd_buf_alloc.clone(),
+                            self.allocators.cmd.clone(),
                             self.context.graphics_queue().queue_family_index(),
                             CommandBufferUsage::OneTimeSubmit,
                         )
@@ -198,11 +226,11 @@ impl ApplicationHandler for App {
                                 .into_iter()
                                 .collect(),
                             )
-                            .unwrap()
-                            .bind_pipeline_graphics(triangle.pipeline.clone())
                             .unwrap();
 
-                        unsafe { builder.draw(3, 1, 0, 0) }.unwrap();
+                        triangle
+                            .pipeline
+                            .render(&mut builder, triangle.sets.to_vec());
 
                         builder.end_render_pass(Default::default()).unwrap();
 
@@ -234,10 +262,13 @@ impl ApplicationHandler for App {
 
 struct Triangle {
     render_pass: Arc<RenderPass>,
-    pipeline: Arc<GraphicsPipeline>,
+    pipeline: CubemapRenderer,
+    camera: OrbitCamera,
+    allocators: Allocators,
+    sets: [Arc<DescriptorSet>; 2],
 }
 impl Triangle {
-    fn new(device: &Arc<Device>, format: Format) -> Self {
+    fn new(device: Arc<Device>, queue: Arc<Queue>, allocators: Allocators, format: Format) -> Self {
         let render_pass = vulkano::single_pass_renderpass!(
             device.clone(),
             attachments: {
@@ -254,55 +285,89 @@ impl Triangle {
             }
         )
         .unwrap();
-
-        let vs = vs::load(device.clone())
-            .unwrap()
-            .entry_point("main")
-            .unwrap();
-        let fs = fs::load(device.clone())
-            .unwrap()
-            .entry_point("main")
-            .unwrap();
-
-        let stages = [
-            PipelineShaderStageCreateInfo::new(vs),
-            PipelineShaderStageCreateInfo::new(fs),
-        ];
-
-        let layout = PipelineLayout::new(
-            device.clone(),
-            PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-                .into_pipeline_layout_create_info(device.clone())
-                .unwrap(),
-        )
-        .unwrap();
-
         let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
 
-        let pipeline = GraphicsPipeline::new(
-            device.clone(),
-            None,
-            GraphicsPipelineCreateInfo {
-                stages: stages.into_iter().collect(),
-                vertex_input_state: Some(VertexInputState::default()),
-                input_assembly_state: Some(InputAssemblyState::default()),
-                viewport_state: Some(ViewportState::default()),
-                rasterization_state: Some(RasterizationState::default()),
-                multisample_state: Some(MultisampleState::default()),
-                color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    subpass.num_color_attachments(),
-                    ColorBlendAttachmentState::default(),
-                )),
-                dynamic_state: [DynamicState::Viewport].into_iter().collect(),
-                subpass: Some(subpass.into()),
-                ..GraphicsPipelineCreateInfo::layout(layout)
+        let camera = OrbitCamera::default();
+        let camera_buffer = Buffer::from_data(
+            allocators.mem.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::UNIFORM_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            cubemap::vs::Camera {
+                view: camera.look_at().into(),
+                proj: camera.perspective(1.0).into(),
             },
         )
         .unwrap();
 
+        let pipeline = CubemapRenderer::new(device, subpass, allocators.mem.clone());
+        let image = image::open("assets/skybox.hdr").unwrap().to_rgba32f();
+
+        let view = {
+            let stage_buffer = Buffer::new_slice(
+                allocators.mem.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::TRANSFER_SRC,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                image.as_bytes().len() as DeviceSize,
+            )
+            .unwrap();
+            stage_buffer
+                .write()
+                .unwrap()
+                .copy_from_slice(image.as_bytes());
+
+            let image = Image::new(
+                allocators.mem.clone(),
+                ImageCreateInfo {
+                    image_type: ImageType::Dim2d,
+                    format: Format::R32G32B32A32_SFLOAT,
+                    extent: [image.width(), image.height(), 1],
+                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                    ..Default::default()
+                },
+                AllocationCreateInfo::default(),
+            )
+            .unwrap();
+
+            let mut builder = AutoCommandBufferBuilder::primary(
+                allocators.cmd.clone(),
+                queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
+            builder
+                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+                    stage_buffer,
+                    image.clone(),
+                ))
+                .unwrap();
+            let command_buffer = builder.build().unwrap();
+
+            let _ = command_buffer.execute(queue.clone()).unwrap();
+
+            ImageView::new_default(image).unwrap()
+        };
+        let sets = pipeline.create_sets(camera_buffer, view, allocators.set.clone());
+
         Self {
             render_pass,
             pipeline,
+            camera,
+            allocators,
+            sets,
         }
     }
 }
