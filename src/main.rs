@@ -3,6 +3,10 @@ use vulkano::command_buffer::{
     AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassBeginInfo,
     SubpassContents,
 };
+use vulkano::instance::debug::{
+    DebugUtilsMessageSeverity, DebugUtilsMessageType, DebugUtilsMessenger,
+    DebugUtilsMessengerCallback, DebugUtilsMessengerCreateInfo,
+};
 use vulkano::pipeline::graphics::vertex_input::VertexInputState;
 use vulkano::pipeline::graphics::viewport::Viewport;
 use vulkano::swapchain::{SwapchainPresentInfo, acquire_next_image};
@@ -34,6 +38,41 @@ use winit::event_loop::ActiveEventLoop;
 use winit::window::Window;
 use winit::{application::ApplicationHandler, event_loop::EventLoop, window::WindowAttributes};
 
+fn debug_info() -> DebugUtilsMessengerCreateInfo {
+    DebugUtilsMessengerCreateInfo {
+        message_severity: DebugUtilsMessageSeverity::ERROR
+            | DebugUtilsMessageSeverity::WARNING
+            | DebugUtilsMessageSeverity::INFO
+            | DebugUtilsMessageSeverity::VERBOSE,
+        message_type: DebugUtilsMessageType::GENERAL
+            | DebugUtilsMessageType::VALIDATION
+            | DebugUtilsMessageType::PERFORMANCE,
+        ..DebugUtilsMessengerCreateInfo::user_callback(unsafe {
+            DebugUtilsMessengerCallback::new(|message_severity, message_type, callback_data| {
+                let msg = format!(
+                    "[{:?}] {} ({}): {}",
+                    message_type,
+                    callback_data.message_id_name.unwrap_or("unknown"),
+                    callback_data.message_id_number,
+                    callback_data.message
+                );
+                if message_severity.contains(DebugUtilsMessageSeverity::ERROR) {
+                    log::error!("{msg}");
+                } else if message_severity.contains(DebugUtilsMessageSeverity::WARNING) {
+                    log::warn!("{msg}");
+                } else if message_severity.contains(DebugUtilsMessageSeverity::INFO) {
+                    log::info!("{msg}");
+                } else if message_severity.contains(DebugUtilsMessageSeverity::VERBOSE) {
+                    log::trace!("{msg}");
+                } else {
+                    // idk if this is desired
+                    panic!("{msg}");
+                }
+            })
+        })
+    }
+}
+
 struct App {
     instance: Arc<Instance>,
     device: Arc<Device>,
@@ -41,21 +80,27 @@ struct App {
     // mem_alloc: Arc<StandardMemoryAllocator>,
     cmd_buf_alloc: Arc<StandardCommandBufferAllocator>,
     rcx: Option<RenderCtx>,
+    _debug: DebugUtilsMessenger,
 }
 impl App {
     fn new(event_loop: &EventLoop<()>) -> Self {
         let library = VulkanLibrary::new().unwrap();
 
-        let required_extensions = Surface::required_extensions(event_loop).unwrap();
+        let mut required_extensions = Surface::required_extensions(event_loop).unwrap();
+        required_extensions.ext_debug_utils = true;
 
+        let debug_info = debug_info();
         let instance = Instance::new(
             library,
             InstanceCreateInfo {
                 enabled_extensions: required_extensions,
+                enabled_layers: vec!["VK_LAYER_KHRONOS_validation".to_owned()],
+                debug_utils_messengers: vec![debug_info.clone()],
                 ..Default::default()
             },
         )
         .unwrap();
+        let debug = DebugUtilsMessenger::new(instance.clone(), debug_info).unwrap();
 
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
@@ -114,6 +159,7 @@ impl App {
             // mem_alloc,
             cmd_buf_alloc,
             rcx: None,
+            _debug: debug,
         }
     }
 }
@@ -290,7 +336,6 @@ impl RenderCtx {
                     image_format,
                     image_extent: size.into(),
                     image_usage: ImageUsage::COLOR_ATTACHMENT,
-                    present_mode: swapchain::PresentMode::Mailbox,
                     ..Default::default()
                 },
             )
