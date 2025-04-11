@@ -3,15 +3,15 @@ mod cubemap;
 
 use camera::OrbitCamera;
 use cubemap::CubemapRenderer;
+use egui_winit_vulkano::{CallbackFn, Gui, GuiConfig};
 use image::EncodableLayout;
 use std::sync::Arc;
 use vulkano::{
     DeviceSize,
-    buffer::{Buffer, BufferCreateInfo, BufferUsage},
+    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
-        PrimaryCommandBufferAbstract, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents,
-        allocator::StandardCommandBufferAllocator,
+        PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{DescriptorSet, allocator::StandardDescriptorSetAllocator},
     device::{Device, DeviceExtensions, Queue},
@@ -25,10 +25,8 @@ use vulkano::{
         },
     },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::graphics::viewport::Viewport,
-    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
+    render_pass::Subpass,
     swapchain::Surface,
-    sync::GpuFuture,
 };
 use vulkano_util::{
     context::{VulkanoConfig, VulkanoContext},
@@ -36,7 +34,7 @@ use vulkano_util::{
 };
 use winit::{
     application::ApplicationHandler,
-    event::WindowEvent,
+    event::{DeviceEvent, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
 };
 
@@ -86,6 +84,7 @@ struct App {
     context: VulkanoContext,
     windows: VulkanoWindows,
     allocators: Allocators,
+    gui: Option<Gui>,
     triangle: Option<Triangle>,
 }
 impl App {
@@ -133,6 +132,7 @@ impl App {
             windows,
             allocators,
             triangle: None,
+            gui: None,
         }
     }
 }
@@ -144,8 +144,23 @@ impl ApplicationHandler for App {
             &Default::default(),
             |swapchain_info| {
                 swapchain_info.image_format = Format::R8G8B8A8_SRGB;
+                // swapchain_info.present_mode = PresentMode::Mailbox;
+                // swapchain_info.min_image_count = 5;
             },
         );
+        let renderer = self.windows.get_primary_renderer_mut().unwrap();
+
+        let gui = Gui::new(
+            event_loop,
+            renderer.surface(),
+            renderer.graphics_queue(),
+            renderer.swapchain_format(),
+            GuiConfig {
+                allow_srgb_render_target: true,
+                ..Default::default()
+            },
+        );
+        self.gui = Some(gui);
 
         let triangle = Triangle::new(
             self.context.device().clone(),
@@ -170,7 +185,9 @@ impl ApplicationHandler for App {
     ) {
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
         let triangle = self.triangle.as_mut().unwrap();
+        let gui = self.gui.as_mut().unwrap();
 
+        gui.update(&event);
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -182,65 +199,19 @@ impl ApplicationHandler for App {
                 renderer.resize();
             }
             WindowEvent::RedrawRequested => {
+                gui.immediate_ui(|gui| {
+                    let ctx = gui.context();
+
+                    egui::CentralPanel::default().show(&ctx, |ui| {
+                        triangle.ui(ui);
+                    });
+                });
+
                 match renderer.acquire(None, |_| {}) {
-                    Ok(future) => {
-                        let view = renderer.swapchain_image_view();
-                        let framebuffer = Framebuffer::new(
-                            triangle.render_pass.clone(),
-                            FramebufferCreateInfo {
-                                attachments: vec![view.clone()],
-                                ..Default::default()
-                            },
-                        )
-                        .unwrap();
-
-                        let mut builder = AutoCommandBufferBuilder::primary(
-                            self.allocators.cmd.clone(),
-                            self.context.graphics_queue().queue_family_index(),
-                            CommandBufferUsage::OneTimeSubmit,
-                        )
-                        .unwrap();
-
-                        builder
-                            .begin_render_pass(
-                                RenderPassBeginInfo {
-                                    clear_values: vec![Some([0.0, 0.0, 0.0, 1.0].into())],
-                                    ..RenderPassBeginInfo::framebuffer(framebuffer)
-                                },
-                                SubpassBeginInfo {
-                                    contents: SubpassContents::Inline,
-                                    ..Default::default()
-                                },
-                            )
-                            .unwrap()
-                            .set_viewport(
-                                0,
-                                [Viewport {
-                                    offset: Default::default(),
-                                    extent: [
-                                        view.image().extent()[0] as f32,
-                                        view.image().extent()[1] as f32,
-                                    ],
-                                    depth_range: 0.0..=1.0,
-                                }]
-                                .into_iter()
-                                .collect(),
-                            )
-                            .unwrap();
-
-                        triangle
-                            .pipeline
-                            .render(&mut builder, triangle.sets.to_vec());
-
-                        builder.end_render_pass(Default::default()).unwrap();
-
-                        let command_buffer = builder.build().unwrap();
-
-                        let after_future = future
-                            .then_execute(self.context.graphics_queue().clone(), command_buffer)
-                            .unwrap();
-
-                        renderer.present(after_future.boxed(), true);
+                    Ok(before_future) => {
+                        let after_future =
+                            gui.draw_on_image(before_future, renderer.swapchain_image_view());
+                        renderer.present(after_future, true);
                     }
                     Err(vulkano::VulkanError::OutOfDate) => {
                         renderer.resize();
@@ -258,14 +229,53 @@ impl ApplicationHandler for App {
         let window = self.windows.get_primary_window().unwrap();
         window.request_redraw();
     }
+
+    fn device_event(
+        &mut self,
+        _event_loop: &ActiveEventLoop,
+        _device_id: winit::event::DeviceId,
+        event: DeviceEvent,
+    ) {
+        if let DeviceEvent::MouseMotion { delta } = event {
+            self.gui.as_mut().unwrap().egui_winit.on_mouse_motion(delta);
+        }
+    }
+}
+
+#[derive(Clone)]
+struct Renderer {
+    pipeline: CubemapRenderer,
+    sets: Vec<Arc<DescriptorSet>>,
+}
+impl Renderer {
+    fn callback(
+        self,
+        rect: egui::Rect,
+        camera: OrbitCamera,
+        camera_buffer: Subbuffer<cubemap::vs::Camera>,
+    ) -> egui::PaintCallback {
+        egui::PaintCallback {
+            rect,
+            callback: Arc::new(CallbackFn::new(move |info, context| {
+                let camera = cubemap::vs::Camera {
+                    view: camera.look_at().into(),
+                    proj: camera.perspective(info.viewport.aspect_ratio()).into(),
+                };
+
+                let mut buffer = camera_buffer.write().unwrap();
+                *buffer = camera;
+
+                self.pipeline.render(context.builder, self.sets.to_vec());
+            })),
+        }
+    }
 }
 
 struct Triangle {
-    render_pass: Arc<RenderPass>,
-    pipeline: CubemapRenderer,
     camera: OrbitCamera,
+    camera_buffer: Subbuffer<cubemap::vs::Camera>,
     allocators: Allocators,
-    sets: [Arc<DescriptorSet>; 2],
+    renderer: Renderer,
 }
 impl Triangle {
     fn new(device: Arc<Device>, queue: Arc<Queue>, allocators: Allocators, format: Format) -> Self {
@@ -360,15 +370,32 @@ impl Triangle {
 
             ImageView::new_default(image).unwrap()
         };
-        let sets = pipeline.create_sets(camera_buffer, view, allocators.set.clone());
+        let sets = pipeline
+            .create_sets(camera_buffer.clone(), view, allocators.set.clone())
+            .to_vec();
 
         Self {
-            render_pass,
-            pipeline,
             camera,
             allocators,
-            sets,
+            camera_buffer,
+            renderer: Renderer { pipeline, sets },
         }
+    }
+    fn ui(&mut self, ui: &mut egui::Ui) {
+        egui::Frame::canvas(ui.style()).show(ui, |ui| {
+            let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
+
+            let drag_delta = response.drag_motion() * 0.001 * self.camera.zoom;
+            self.camera.pitch += drag_delta.y;
+            self.camera.yaw += drag_delta.x;
+            self.camera.wrap();
+
+            let paint_callback =
+                self.renderer
+                    .clone()
+                    .callback(rect, self.camera, self.camera_buffer.clone());
+            ui.painter().add(paint_callback);
+        });
     }
 }
 

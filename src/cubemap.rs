@@ -125,6 +125,7 @@ impl CubeMesh {
     }
 }
 
+#[derive(Clone)]
 pub struct CubemapRenderer {
     pub mesh: Arc<CubeMesh>,
     pub pipeline: Arc<GraphicsPipeline>,
