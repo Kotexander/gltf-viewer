@@ -1,22 +1,11 @@
-mod camera;
-mod cubemap;
-
-use camera::OrbitCamera;
-use cubemap::CubemapRenderer;
-use egui_winit_vulkano::{CallbackFn, Gui, GuiConfig};
-use image::EncodableLayout;
+use egui_winit_vulkano::{Gui, GuiConfig};
+use gltf_viewer::{Allocators, Triangle};
 use std::sync::Arc;
 use vulkano::{
-    DeviceSize,
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
-    command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
-        PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator,
-    },
-    descriptor_set::{DescriptorSet, allocator::StandardDescriptorSetAllocator},
-    device::{Device, DeviceExtensions, Queue},
+    command_buffer::allocator::StandardCommandBufferAllocator,
+    descriptor_set::allocator::StandardDescriptorSetAllocator,
+    device::DeviceExtensions,
     format::Format,
-    image::{Image, ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
     instance::{
         InstanceCreateInfo,
         debug::{
@@ -24,8 +13,6 @@ use vulkano::{
             DebugUtilsMessengerCreateInfo,
         },
     },
-    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    render_pass::Subpass,
     swapchain::Surface,
 };
 use vulkano_util::{
@@ -71,13 +58,6 @@ fn debug_info() -> DebugUtilsMessengerCreateInfo {
             })
         })
     }
-}
-
-#[derive(Clone)]
-struct Allocators {
-    cmd: Arc<StandardCommandBufferAllocator>,
-    mem: Arc<StandardMemoryAllocator>,
-    set: Arc<StandardDescriptorSetAllocator>,
 }
 
 struct App {
@@ -160,7 +140,6 @@ impl ApplicationHandler for App {
                 ..Default::default()
             },
         );
-        self.gui = Some(gui);
 
         let triangle = Triangle::new(
             self.context.device().clone(),
@@ -169,11 +148,10 @@ impl ApplicationHandler for App {
                 .unwrap_or(self.context.graphics_queue())
                 .clone(),
             self.allocators.clone(),
-            self.windows
-                .get_primary_renderer()
-                .unwrap()
-                .swapchain_format(),
+            gui.render_resources().subpass,
         );
+
+        self.gui = Some(gui);
         self.triangle = Some(triangle);
     }
 
@@ -242,163 +220,6 @@ impl ApplicationHandler for App {
     }
 }
 
-#[derive(Clone)]
-struct Renderer {
-    pipeline: CubemapRenderer,
-    sets: Vec<Arc<DescriptorSet>>,
-}
-impl Renderer {
-    fn callback(
-        self,
-        rect: egui::Rect,
-        camera: OrbitCamera,
-        camera_buffer: Subbuffer<cubemap::vs::Camera>,
-    ) -> egui::PaintCallback {
-        egui::PaintCallback {
-            rect,
-            callback: Arc::new(CallbackFn::new(move |info, context| {
-                let camera = cubemap::vs::Camera {
-                    view: camera.look_at().into(),
-                    proj: camera.perspective(info.viewport.aspect_ratio()).into(),
-                };
-
-                let mut buffer = camera_buffer.write().unwrap();
-                *buffer = camera;
-
-                self.pipeline.render(context.builder, self.sets.to_vec());
-            })),
-        }
-    }
-}
-
-struct Triangle {
-    camera: OrbitCamera,
-    camera_buffer: Subbuffer<cubemap::vs::Camera>,
-    allocators: Allocators,
-    renderer: Renderer,
-}
-impl Triangle {
-    fn new(device: Arc<Device>, queue: Arc<Queue>, allocators: Allocators, format: Format) -> Self {
-        let render_pass = vulkano::single_pass_renderpass!(
-            device.clone(),
-            attachments: {
-                color: {
-                    format: format,
-                    samples: 1,
-                    load_op: Clear,
-                    store_op: Store,
-                }
-            },
-            pass: {
-                color: [color],
-                depth_stencil: {},
-            }
-        )
-        .unwrap();
-        let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
-
-        let camera = OrbitCamera::default();
-        let camera_buffer = Buffer::from_data(
-            allocators.mem.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::UNIFORM_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            cubemap::vs::Camera {
-                view: camera.look_at().into(),
-                proj: camera.perspective(1.0).into(),
-            },
-        )
-        .unwrap();
-
-        let pipeline = CubemapRenderer::new(device, subpass, allocators.mem.clone());
-        let image = image::open("assets/skybox.hdr").unwrap().to_rgba32f();
-
-        let view = {
-            let stage_buffer = Buffer::new_slice(
-                allocators.mem.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_SRC,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                image.as_bytes().len() as DeviceSize,
-            )
-            .unwrap();
-            stage_buffer
-                .write()
-                .unwrap()
-                .copy_from_slice(image.as_bytes());
-
-            let image = Image::new(
-                allocators.mem.clone(),
-                ImageCreateInfo {
-                    image_type: ImageType::Dim2d,
-                    format: Format::R32G32B32A32_SFLOAT,
-                    extent: [image.width(), image.height(), 1],
-                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-                    ..Default::default()
-                },
-                AllocationCreateInfo::default(),
-            )
-            .unwrap();
-
-            let mut builder = AutoCommandBufferBuilder::primary(
-                allocators.cmd.clone(),
-                queue.queue_family_index(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
-            builder
-                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-                    stage_buffer,
-                    image.clone(),
-                ))
-                .unwrap();
-            let command_buffer = builder.build().unwrap();
-
-            let _ = command_buffer.execute(queue.clone()).unwrap();
-
-            ImageView::new_default(image).unwrap()
-        };
-        let sets = pipeline
-            .create_sets(camera_buffer.clone(), view, allocators.set.clone())
-            .to_vec();
-
-        Self {
-            camera,
-            allocators,
-            camera_buffer,
-            renderer: Renderer { pipeline, sets },
-        }
-    }
-    fn ui(&mut self, ui: &mut egui::Ui) {
-        egui::Frame::canvas(ui.style()).show(ui, |ui| {
-            let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
-
-            let drag_delta = response.drag_motion() * 0.001 * self.camera.zoom;
-            self.camera.pitch += drag_delta.y;
-            self.camera.yaw += drag_delta.x;
-            self.camera.wrap();
-
-            let paint_callback =
-                self.renderer
-                    .clone()
-                    .callback(rect, self.camera, self.camera_buffer.clone());
-            ui.painter().add(paint_callback);
-        });
-    }
-}
-
 fn main() -> anyhow::Result<()> {
     colog::init();
 
@@ -407,17 +228,4 @@ fn main() -> anyhow::Result<()> {
     event_loop.run_app(&mut app)?;
 
     Ok(())
-}
-
-mod vs {
-    vulkano_shaders::shader! {
-        ty: "vertex",
-        path: "shaders/shader.vert",
-    }
-}
-mod fs {
-    vulkano_shaders::shader! {
-        ty: "fragment",
-        path: "shaders/shader.frag",
-    }
 }
