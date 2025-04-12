@@ -3,6 +3,7 @@ use cubemap::{cubemap::CubemapRenderer, equirectangular::EquirectangularRenderer
 use egui_winit_vulkano::CallbackFn;
 use image::EncodableLayout;
 use nalgebra_glm as glm;
+use simple::{SimpleMesh, SimpleRenderer};
 use std::sync::Arc;
 use vulkano::{
     DeviceSize,
@@ -24,6 +25,7 @@ use vulkano::{
 
 mod camera;
 mod cubemap;
+mod simple;
 
 #[derive(Clone)]
 pub struct Allocators {
@@ -37,51 +39,23 @@ struct EquiRenderer {
     pipeline: EquirectangularRenderer,
     sets: Vec<Arc<DescriptorSet>>,
 }
-impl EquiRenderer {
-    fn callback(
-        self,
-        rect: egui::Rect,
-        camera: OrbitCamera,
-        camera_buffer: Subbuffer<[glm::Mat4; 2]>,
-    ) -> egui::PaintCallback {
-        egui::PaintCallback {
-            rect,
-            callback: Arc::new(CallbackFn::new(move |info, context| {
-                let mut buffer = camera_buffer.write().unwrap();
-                *buffer = [
-                    camera.look_at(),
-                    camera.perspective(info.viewport.aspect_ratio()),
-                ];
-
-                self.pipeline.render(context.builder, self.sets.to_vec());
-            })),
-        }
-    }
-}
 
 #[derive(Clone)]
 struct CubeRenderer {
     pipeline: CubemapRenderer,
     sets: Vec<Arc<DescriptorSet>>,
 }
-impl CubeRenderer {
-    fn callback(
-        self,
-        rect: egui::Rect,
-        camera: OrbitCamera,
-        camera_buffer: Subbuffer<[glm::Mat4; 2]>,
-    ) -> egui::PaintCallback {
-        egui::PaintCallback {
-            rect,
-            callback: Arc::new(CallbackFn::new(move |info, context| {
-                let mut buffer = camera_buffer.write().unwrap();
-                *buffer = [
-                    camera.look_at(),
-                    camera.perspective(info.viewport.aspect_ratio()),
-                ];
 
-                self.pipeline.render(context.builder, self.sets.to_vec());
-            })),
+#[derive(Clone)]
+struct Simple {
+    pipeline: SimpleRenderer,
+    set: Arc<DescriptorSet>,
+    meshes: Vec<SimpleMesh>,
+}
+impl Simple {
+    fn render<L>(&self, builder: &mut AutoCommandBufferBuilder<L>) {
+        for mesh in &self.meshes {
+            self.pipeline.render(builder, mesh, self.set.clone());
         }
     }
 }
@@ -93,6 +67,7 @@ pub struct Triangle {
     camera_buffer: Subbuffer<[glm::Mat4; 2]>,
     equi_renderer: EquiRenderer,
     cube_renderer: CubeRenderer,
+    simple_renderer: Simple,
     allocators: Allocators,
 }
 impl Triangle {
@@ -143,16 +118,19 @@ impl Triangle {
         )
         .unwrap();
 
-        let equi_pipeline =
-            EquirectangularRenderer::new(device.clone(), subpass.clone(), allocators.mem.clone());
-        let cube_pipeline = CubemapRenderer::new(device.clone(), subpass, allocators.mem.clone());
+        let equi_pipeline = EquirectangularRenderer::new(allocators.mem.clone(), subpass.clone());
+        let cube_pipeline = CubemapRenderer::new(allocators.mem.clone(), subpass.clone());
+        let simple_pipeline = SimpleRenderer::new(device, subpass);
 
         let equi_sets = equi_pipeline
-            .create_sets(camera_buffer.clone(), equi_view, allocators.set.clone())
+            .create_sets(allocators.set.clone(), camera_buffer.clone(), equi_view)
             .to_vec();
         let cube_sets = cube_pipeline
-            .create_sets(camera_buffer.clone(), cube_view, allocators.set.clone())
+            .create_sets(allocators.set.clone(), camera_buffer.clone(), cube_view)
             .to_vec();
+        let simple_set = simple_pipeline.create_sets(allocators.set.clone(), camera_buffer.clone());
+
+        let meshes = SimpleMesh::new(allocators.mem.clone(), "assets/monke.obj");
 
         Self {
             camera,
@@ -166,6 +144,12 @@ impl Triangle {
                 pipeline: cube_pipeline,
                 sets: cube_sets,
             },
+            simple_renderer: Simple {
+                pipeline: simple_pipeline,
+                set: simple_set,
+                meshes,
+            },
+
             mode: false,
         }
     }
@@ -176,26 +160,45 @@ impl Triangle {
         egui::Frame::canvas(ui.style()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
 
-            let drag_delta = response.drag_motion() * 0.001 * self.camera.zoom;
-            self.camera.pitch += drag_delta.y;
+            let drag_delta = response.drag_motion() * 0.005;
+            self.camera.pitch -= drag_delta.y;
             self.camera.yaw += drag_delta.x;
             self.camera.wrap();
 
-            if self.mode {
-                let paint_callback = self.equi_renderer.clone().callback(
-                    rect,
-                    self.camera,
-                    self.camera_buffer.clone(),
-                );
-                ui.painter().add(paint_callback);
-            } else {
-                let paint_callback = self.cube_renderer.clone().callback(
-                    rect,
-                    self.camera,
-                    self.camera_buffer.clone(),
-                );
-                ui.painter().add(paint_callback);
-            }
+            let smooth_scroll = response.ctx.input(|i| i.smooth_scroll_delta);
+            self.camera.zoom += self.camera.zoom * -smooth_scroll.y * 0.003;
+            self.camera.clamp();
+
+            let equi_renderer = self.equi_renderer.clone();
+            let cube_renderer = self.cube_renderer.clone();
+            let simple_renderer = self.simple_renderer.clone();
+            let camera = self.camera;
+            let camera_buffer = self.camera_buffer.clone();
+            let mode = self.mode;
+
+            let callback = egui::PaintCallback {
+                rect,
+                callback: Arc::new(CallbackFn::new(move |info, context| {
+                    let mut buffer = camera_buffer.write().unwrap();
+                    *buffer = [
+                        camera.look_at(),
+                        camera.perspective(info.viewport.aspect_ratio()),
+                    ];
+
+                    if mode {
+                        cube_renderer
+                            .pipeline
+                            .render(context.builder, cube_renderer.sets.clone());
+                    } else {
+                        equi_renderer
+                            .pipeline
+                            .render(context.builder, equi_renderer.sets.clone());
+                    }
+
+                    simple_renderer.render(context.builder);
+                })),
+            };
+            ui.painter().add(callback);
         });
     }
 }

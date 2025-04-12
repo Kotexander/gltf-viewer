@@ -18,15 +18,8 @@ impl OrbitCamera {
     pub fn eye(&self) -> glm::Vec3 {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
-        self.target + glm::vec3(sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch) * self.zoom
+        self.target - glm::vec3(sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch) * self.zoom
     }
-    pub fn look_at(&self) -> glm::Mat4 {
-        glm::look_at_rh(&self.eye(), &self.target, &self.up())
-    }
-    pub fn perspective(&self, aspect: f32) -> glm::Mat4 {
-        glm::perspective_rh_zo(aspect, self.fov, self.near, self.far)
-    }
-
     pub fn up(&self) -> glm::Vec3 {
         if self.is_upside_down() {
             glm::Vec3::y()
@@ -34,12 +27,24 @@ impl OrbitCamera {
             -glm::Vec3::y()
         }
     }
+
+    pub fn look_at(&self) -> glm::Mat4 {
+        glm::look_at_rh(&self.eye(), &self.target, &self.up())
+    }
+    pub fn perspective(&self, aspect: f32) -> glm::Mat4 {
+        glm::perspective_rh_zo(aspect, self.fov, self.near, self.far)
+    }
+
+    pub fn is_upside_down(&self) -> bool {
+        self.pitch > FRAC_PI_2 && self.pitch < 3.0 * FRAC_PI_2
+    }
+
     pub fn wrap(&mut self) {
         self.pitch = self.pitch.rem_euclid(TAU);
         self.yaw = self.yaw.rem_euclid(TAU);
     }
-    pub fn is_upside_down(&self) -> bool {
-        self.pitch > FRAC_PI_2 && self.pitch < 3.0 * FRAC_PI_2
+    pub fn clamp(&mut self) {
+        self.zoom = self.zoom.clamp(self.near, self.far);
     }
 }
 impl Default for OrbitCamera {

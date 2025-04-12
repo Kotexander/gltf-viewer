@@ -8,7 +8,7 @@ use vulkano::{
         DescriptorSet, DescriptorSetsCollection, WriteDescriptorSet,
         allocator::StandardDescriptorSetAllocator,
     },
-    device::{Device, DeviceOwned},
+    device::DeviceOwned,
     image::{
         sampler::{Sampler, SamplerCreateInfo},
         view::ImageView,
@@ -37,16 +37,12 @@ pub struct CubemapRenderer {
     pub pipeline: Arc<GraphicsPipeline>,
 }
 impl CubemapRenderer {
-    pub fn new(
-        device: Arc<Device>,
-        subpass: Subpass,
-        memory_allocator: Arc<StandardMemoryAllocator>,
-    ) -> Self {
-        let vs = vs::load(device.clone())
+    pub fn new(memory_allocator: Arc<StandardMemoryAllocator>, subpass: Subpass) -> Self {
+        let vs = vs::load(memory_allocator.device().clone())
             .unwrap()
             .entry_point("main")
             .unwrap();
-        let fs = fs::load(device.clone())
+        let fs = fs::load(memory_allocator.device().clone())
             .unwrap()
             .entry_point("main")
             .unwrap();
@@ -59,15 +55,15 @@ impl CubemapRenderer {
         ];
 
         let layout = PipelineLayout::new(
-            device.clone(),
+            memory_allocator.device().clone(),
             PipelineDescriptorSetLayoutCreateInfo::from_stages(&stages)
-                .into_pipeline_layout_create_info(device.clone())
+                .into_pipeline_layout_create_info(memory_allocator.device().clone())
                 .unwrap(),
         )
         .unwrap();
 
         let pipeline = GraphicsPipeline::new(
-            device.clone(),
+            memory_allocator.device().clone(),
             None,
             GraphicsPipelineCreateInfo {
                 stages: stages.into_iter().collect(),
@@ -97,9 +93,9 @@ impl CubemapRenderer {
     }
     pub fn create_sets(
         &self,
+        descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
         camera_buffer: Subbuffer<[glm::Mat4; 2]>,
         view: Arc<ImageView>,
-        descriptor_set_allocator: Arc<StandardDescriptorSetAllocator>,
     ) -> [Arc<DescriptorSet>; 2] {
         let camera_set = DescriptorSet::new(
             descriptor_set_allocator.clone(),
