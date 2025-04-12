@@ -15,6 +15,7 @@ use vulkano::{
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
+            depth_stencil::{DepthState, DepthStencilState},
             input_assembly::InputAssemblyState,
             multisample::MultisampleState,
             rasterization::{CullMode, FrontFace, RasterizationState},
@@ -138,17 +139,23 @@ impl SimpleRenderer {
                 vertex_input_state: Some(vertex_input_state),
                 input_assembly_state: Some(InputAssemblyState::default()),
                 viewport_state: Some(ViewportState::default()),
+                multisample_state: Some(MultisampleState::default()),
                 rasterization_state: Some(RasterizationState {
                     front_face: FrontFace::Clockwise,
                     cull_mode: CullMode::Back,
                     ..Default::default()
                 }),
-                multisample_state: Some(MultisampleState::default()),
                 color_blend_state: Some(ColorBlendState::with_attachment_states(
                     subpass.num_color_attachments(),
                     ColorBlendAttachmentState::default(),
                 )),
-                dynamic_state: [DynamicState::Viewport].into_iter().collect(),
+                depth_stencil_state: Some(DepthStencilState {
+                    depth: Some(DepthState::simple()),
+                    ..Default::default()
+                }),
+                dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
+                    .into_iter()
+                    .collect(),
                 subpass: Some(subpass.into()),
                 ..GraphicsPipelineCreateInfo::layout(layout)
             },

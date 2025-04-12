@@ -2,7 +2,10 @@ use egui_winit_vulkano::{Gui, GuiConfig};
 use gltf_viewer::{Allocators, Triangle};
 use std::sync::Arc;
 use vulkano::{
-    command_buffer::allocator::StandardCommandBufferAllocator,
+    command_buffer::{
+        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassBeginInfo,
+        SubpassContents, allocator::StandardCommandBufferAllocator,
+    },
     descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::DeviceExtensions,
     format::Format,
@@ -13,7 +16,9 @@ use vulkano::{
             DebugUtilsMessengerCreateInfo,
         },
     },
+    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     swapchain::Surface,
+    sync::GpuFuture,
 };
 use vulkano_util::{
     context::{VulkanoConfig, VulkanoContext},
@@ -66,6 +71,7 @@ struct App {
     allocators: Allocators,
     gui: Option<Gui>,
     triangle: Option<Triangle>,
+    render_pass: Option<Arc<RenderPass>>,
 }
 impl App {
     fn new(event_loop: &EventLoop<()>) -> Self {
@@ -113,6 +119,7 @@ impl App {
             allocators,
             triangle: None,
             gui: None,
+            render_pass: None,
         }
     }
 }
@@ -130,10 +137,35 @@ impl ApplicationHandler for App {
         );
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
 
-        let gui = Gui::new(
+        let render_pass = vulkano::single_pass_renderpass!(
+            self.context.device().clone(),
+            attachments: {
+                color: {
+                    format: renderer.swapchain_format(),
+                    samples: 1,
+                    load_op: Clear,
+                    store_op: Store,
+                },
+                depth_stencil: {
+                    format: Format::D32_SFLOAT,
+                    samples: 1,
+                    load_op: Clear,
+                    store_op: DontCare,
+                },
+            },
+            pass: {
+                color: [color],
+                depth_stencil: {depth_stencil}
+            },
+        )
+        .unwrap();
+        let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
+
+        let gui = Gui::new_with_subpass(
             event_loop,
             renderer.surface(),
             renderer.graphics_queue(),
+            subpass,
             renderer.swapchain_format(),
             GuiConfig {
                 allow_srgb_render_target: true,
@@ -149,10 +181,12 @@ impl ApplicationHandler for App {
                 .clone(),
             self.allocators.clone(),
             gui.render_resources().subpass,
+            renderer.swapchain_image_size(),
         );
 
         self.gui = Some(gui);
         self.triangle = Some(triangle);
+        self.render_pass = Some(render_pass);
     }
 
     fn window_event(
@@ -164,6 +198,7 @@ impl ApplicationHandler for App {
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
         let triangle = self.triangle.as_mut().unwrap();
         let gui = self.gui.as_mut().unwrap();
+        let render_pass = self.render_pass.as_mut().unwrap();
 
         gui.update(&event);
         match event {
@@ -185,11 +220,53 @@ impl ApplicationHandler for App {
                     });
                 });
 
-                match renderer.acquire(None, |_| {}) {
+                match renderer.acquire(None, |view| {
+                    let extent = view[0].image().extent();
+                    triangle.resize([extent[0], extent[1]]);
+                }) {
                     Ok(before_future) => {
-                        let after_future =
-                            gui.draw_on_image(before_future, renderer.swapchain_image_view());
-                        renderer.present(after_future, true);
+                        let image = renderer.swapchain_image_view();
+
+                        let dimensions = image.image().extent();
+                        let framebuffer = Framebuffer::new(
+                            render_pass.clone(),
+                            FramebufferCreateInfo {
+                                attachments: vec![image, triangle.depth_buffer.clone()],
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+
+                        let mut builder = AutoCommandBufferBuilder::primary(
+                            self.allocators.cmd.clone(),
+                            renderer.graphics_queue().queue_family_index(),
+                            CommandBufferUsage::OneTimeSubmit,
+                        )
+                        .unwrap();
+                        builder
+                            .begin_render_pass(
+                                RenderPassBeginInfo {
+                                    clear_values: vec![
+                                        Some([0.0, 0.0, 0.0, 1.0].into()),
+                                        Some(1f32.into()),
+                                    ],
+                                    ..RenderPassBeginInfo::framebuffer(framebuffer)
+                                },
+                                SubpassBeginInfo {
+                                    contents: SubpassContents::SecondaryCommandBuffers,
+                                    ..Default::default()
+                                },
+                            )
+                            .unwrap();
+                        let cb = gui.draw_on_subpass_image([dimensions[0], dimensions[1]]);
+                        builder.execute_commands(cb).unwrap();
+                        builder.end_render_pass(Default::default()).unwrap();
+
+                        let command_buffer = builder.build().unwrap();
+                        let after_future = before_future
+                            .then_execute(renderer.graphics_queue(), command_buffer)
+                            .unwrap();
+                        renderer.present(after_future.boxed(), true);
                     }
                     Err(vulkano::VulkanError::OutOfDate) => {
                         renderer.resize();

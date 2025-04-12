@@ -55,7 +55,7 @@ impl Default for OrbitCamera {
             yaw: 0.0,
             zoom: 3.0,
             fov: FRAC_PI_3,
-            near: 0.01,
+            near: 0.1,
             far: 100.0,
         }
     }

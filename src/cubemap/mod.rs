@@ -34,28 +34,28 @@ const VERTICES: [CubemapVertex; 8] = [
 #[rustfmt::skip]
 const INDICES: [u16; 36] = [
     // back face (z+)
-    4, 5, 6,
-    6, 7, 4,
+    6, 5, 4,
+    4, 7, 6,
 
     // front face (z-)
-    0, 3, 2,
-    2, 1, 0,
+    2, 3, 0,
+    0, 1, 2,
 
     // left face (x-)
-    0, 4, 7,
-    7, 3, 0,
+    7, 4, 0,
+    0, 3, 7,
 
     // right face (x+)
-    1, 2, 6,
-    6, 5, 1,
+    6, 2, 1,
+    1, 5, 6,
 
     // top face (y+)
-    3, 7, 6,
-    6, 2, 3,
+    6, 7, 3,
+    3, 2, 6,
 
     // bottom face (y-)
-    0, 1, 5,
-    5, 4, 0,
+    5, 1, 0,
+    0, 4, 5,
 ];
 
 pub struct CubeMesh {
