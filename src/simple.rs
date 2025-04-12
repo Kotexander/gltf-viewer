@@ -8,6 +8,7 @@ use vulkano::{
         allocator::StandardDescriptorSetAllocator,
     },
     device::Device,
+    image::SampleCount,
     memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter},
     pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
@@ -139,7 +140,10 @@ impl SimpleRenderer {
                 vertex_input_state: Some(vertex_input_state),
                 input_assembly_state: Some(InputAssemblyState::default()),
                 viewport_state: Some(ViewportState::default()),
-                multisample_state: Some(MultisampleState::default()),
+                multisample_state: Some(MultisampleState {
+                    rasterization_samples: subpass.num_samples().unwrap_or(SampleCount::Sample1),
+                    ..Default::default()
+                }),
                 rasterization_state: Some(RasterizationState {
                     front_face: FrontFace::Clockwise,
                     cull_mode: CullMode::Back,

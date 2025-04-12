@@ -1,14 +1,16 @@
 use egui_winit_vulkano::{Gui, GuiConfig};
+use frameinfo::FrameInfo;
 use gltf_viewer::{Allocators, Triangle};
 use std::sync::Arc;
 use vulkano::{
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, RenderPassBeginInfo, SubpassBeginInfo,
-        SubpassContents, allocator::StandardCommandBufferAllocator,
+        AutoCommandBufferBuilder, CommandBufferUsage, SubpassBeginInfo, SubpassContents,
+        allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::DeviceExtensions,
     format::Format,
+    image::ImageUsage,
     instance::{
         InstanceCreateInfo,
         debug::{
@@ -16,7 +18,6 @@ use vulkano::{
             DebugUtilsMessengerCreateInfo,
         },
     },
-    render_pass::{Framebuffer, FramebufferCreateInfo, RenderPass, Subpass},
     swapchain::Surface,
     sync::GpuFuture,
 };
@@ -29,6 +30,8 @@ use winit::{
     event::{DeviceEvent, WindowEvent},
     event_loop::{ActiveEventLoop, EventLoop},
 };
+
+mod frameinfo;
 
 fn debug_info() -> DebugUtilsMessengerCreateInfo {
     DebugUtilsMessengerCreateInfo {
@@ -71,7 +74,7 @@ struct App {
     allocators: Allocators,
     gui: Option<Gui>,
     triangle: Option<Triangle>,
-    render_pass: Option<Arc<RenderPass>>,
+    frame_info: Option<FrameInfo>,
 }
 impl App {
     fn new(event_loop: &EventLoop<()>) -> Self {
@@ -119,7 +122,7 @@ impl App {
             allocators,
             triangle: None,
             gui: None,
-            render_pass: None,
+            frame_info: None,
         }
     }
 }
@@ -131,41 +134,23 @@ impl ApplicationHandler for App {
             &Default::default(),
             |swapchain_info| {
                 swapchain_info.image_format = Format::R8G8B8A8_SRGB;
+                swapchain_info.image_usage |= ImageUsage::TRANSFER_DST;
                 // swapchain_info.present_mode = PresentMode::Mailbox;
                 // swapchain_info.min_image_count = 5;
             },
         );
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
 
-        let render_pass = vulkano::single_pass_renderpass!(
-            self.context.device().clone(),
-            attachments: {
-                color: {
-                    format: renderer.swapchain_format(),
-                    samples: 1,
-                    load_op: Clear,
-                    store_op: Store,
-                },
-                depth_stencil: {
-                    format: Format::D32_SFLOAT,
-                    samples: 1,
-                    load_op: Clear,
-                    store_op: DontCare,
-                },
-            },
-            pass: {
-                color: [color],
-                depth_stencil: {depth_stencil}
-            },
-        )
-        .unwrap();
-        let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
+        let frame_info = FrameInfo::new(
+            self.allocators.mem.clone(),
+            renderer.swapchain_image_views().to_vec(),
+        );
 
         let gui = Gui::new_with_subpass(
             event_loop,
             renderer.surface(),
             renderer.graphics_queue(),
-            subpass,
+            frame_info.subpass().clone(),
             renderer.swapchain_format(),
             GuiConfig {
                 allow_srgb_render_target: true,
@@ -180,13 +165,12 @@ impl ApplicationHandler for App {
                 .unwrap_or(self.context.graphics_queue())
                 .clone(),
             self.allocators.clone(),
-            gui.render_resources().subpass,
-            renderer.swapchain_image_size(),
+            frame_info.subpass().clone(),
         );
 
         self.gui = Some(gui);
         self.triangle = Some(triangle);
-        self.render_pass = Some(render_pass);
+        self.frame_info = Some(frame_info);
     }
 
     fn window_event(
@@ -198,7 +182,7 @@ impl ApplicationHandler for App {
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
         let triangle = self.triangle.as_mut().unwrap();
         let gui = self.gui.as_mut().unwrap();
-        let render_pass = self.render_pass.as_mut().unwrap();
+        let frame_info = self.frame_info.as_mut().unwrap();
 
         gui.update(&event);
         match event {
@@ -220,23 +204,10 @@ impl ApplicationHandler for App {
                     });
                 });
 
-                match renderer.acquire(None, |view| {
-                    let extent = view[0].image().extent();
-                    triangle.resize([extent[0], extent[1]]);
+                match renderer.acquire(None, |views| {
+                    frame_info.recreate(views.to_vec());
                 }) {
                     Ok(before_future) => {
-                        let image = renderer.swapchain_image_view();
-
-                        let dimensions = image.image().extent();
-                        let framebuffer = Framebuffer::new(
-                            render_pass.clone(),
-                            FramebufferCreateInfo {
-                                attachments: vec![image, triangle.depth_buffer.clone()],
-                                ..Default::default()
-                            },
-                        )
-                        .unwrap();
-
                         let mut builder = AutoCommandBufferBuilder::primary(
                             self.allocators.cmd.clone(),
                             renderer.graphics_queue().queue_family_index(),
@@ -245,20 +216,14 @@ impl ApplicationHandler for App {
                         .unwrap();
                         builder
                             .begin_render_pass(
-                                RenderPassBeginInfo {
-                                    clear_values: vec![
-                                        Some([0.0, 0.0, 0.0, 1.0].into()),
-                                        Some(1f32.into()),
-                                    ],
-                                    ..RenderPassBeginInfo::framebuffer(framebuffer)
-                                },
+                                frame_info.render_pass_info(renderer.image_index() as usize),
                                 SubpassBeginInfo {
                                     contents: SubpassContents::SecondaryCommandBuffers,
                                     ..Default::default()
                                 },
                             )
                             .unwrap();
-                        let cb = gui.draw_on_subpass_image([dimensions[0], dimensions[1]]);
+                        let cb = gui.draw_on_subpass_image(renderer.swapchain_image_size());
                         builder.execute_commands(cb).unwrap();
                         builder.end_render_pass(Default::default()).unwrap();
 

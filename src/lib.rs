@@ -63,7 +63,6 @@ impl Simple {
 pub struct Triangle {
     camera: OrbitCamera,
     mode: bool,
-    pub depth_buffer: Arc<ImageView>,
     camera_buffer: Subbuffer<[glm::Mat4; 2]>,
     equi_renderer: EquiRenderer,
     cube_renderer: CubeRenderer,
@@ -76,10 +75,7 @@ impl Triangle {
         queue: Arc<Queue>,
         allocators: Allocators,
         subpass: Subpass,
-        size: [u32; 2],
     ) -> Self {
-        let depth_buffer = Self::create_depth_buffer(allocators.mem.clone(), size);
-
         let camera = OrbitCamera::default();
         let camera_buffer = Buffer::from_data(
             allocators.mem.clone(),
@@ -154,12 +150,7 @@ impl Triangle {
             },
 
             mode: false,
-            depth_buffer,
         }
-    }
-
-    pub fn resize(&mut self, size: [u32; 2]) {
-        self.depth_buffer = Self::create_depth_buffer(self.allocators.mem.clone(), size);
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
@@ -208,27 +199,6 @@ impl Triangle {
             };
             ui.painter().add(callback);
         });
-    }
-
-    fn create_depth_buffer(
-        allocator: Arc<StandardMemoryAllocator>,
-        size: [u32; 2],
-    ) -> Arc<ImageView> {
-        ImageView::new_default(
-            Image::new(
-                allocator,
-                ImageCreateInfo {
-                    image_type: ImageType::Dim2d,
-                    format: Format::D32_SFLOAT,
-                    extent: [size[0], size[1], 1],
-                    usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT | ImageUsage::TRANSIENT_ATTACHMENT,
-                    ..Default::default()
-                },
-                AllocationCreateInfo::default(),
-            )
-            .unwrap(),
-        )
-        .unwrap()
     }
 }
 

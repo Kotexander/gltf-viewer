@@ -10,6 +10,7 @@ use vulkano::{
     },
     device::DeviceOwned,
     image::{
+        SampleCount,
         sampler::{Sampler, SamplerCreateInfo},
         view::ImageView,
     },
@@ -76,7 +77,10 @@ impl EquirectangularRenderer {
                     cull_mode: CullMode::Back,
                     ..Default::default()
                 }),
-                multisample_state: Some(MultisampleState::default()),
+                multisample_state: Some(MultisampleState {
+                    rasterization_samples: subpass.num_samples().unwrap_or(SampleCount::Sample1),
+                    ..Default::default()
+                }),
                 color_blend_state: Some(vulkano::pipeline::graphics::color_blend::ColorBlendState::with_attachment_states(
                     subpass.num_color_attachments(),
                     ColorBlendAttachmentState::default(),
