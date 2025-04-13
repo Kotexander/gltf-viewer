@@ -1,10 +1,10 @@
 use camera::OrbitCamera;
-use cubemap::{cubemap::CubemapRenderer, equirectangular::EquirectangularRenderer};
+use cubemap::CubemapPipeline;
 use egui_winit_vulkano::CallbackFn;
 use image::EncodableLayout;
 use nalgebra_glm as glm;
-use simple::{SimpleMesh, SimpleRenderer};
-use std::sync::Arc;
+use std::{collections::BTreeMap, sync::Arc};
+use viewer::{GltfPipeline, GltfRenderInfo, load_gltf};
 use vulkano::{
     DeviceSize,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
@@ -12,20 +12,29 @@ use vulkano::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
         PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator,
     },
-    descriptor_set::{DescriptorSet, allocator::StandardDescriptorSetAllocator},
+    descriptor_set::{
+        DescriptorSet, WriteDescriptorSet,
+        allocator::StandardDescriptorSetAllocator,
+        layout::{
+            DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
+            DescriptorType,
+        },
+    },
     device::{Device, Queue},
     format::Format,
     image::{
         Image, ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage,
+        sampler::{Sampler, SamplerCreateInfo},
         view::{ImageView, ImageViewCreateInfo, ImageViewType},
     },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     render_pass::Subpass,
+    shader::ShaderStages,
 };
 
 mod camera;
 mod cubemap;
-mod simple;
+mod viewer;
 
 #[derive(Clone)]
 pub struct Allocators {
@@ -35,38 +44,15 @@ pub struct Allocators {
 }
 
 #[derive(Clone)]
-struct EquiRenderer {
-    pipeline: EquirectangularRenderer,
-    sets: Vec<Arc<DescriptorSet>>,
-}
-
-#[derive(Clone)]
-struct CubeRenderer {
-    pipeline: CubemapRenderer,
-    sets: Vec<Arc<DescriptorSet>>,
-}
-
-#[derive(Clone)]
-struct Simple {
-    pipeline: SimpleRenderer,
-    set: Arc<DescriptorSet>,
-    meshes: Vec<SimpleMesh>,
-}
-impl Simple {
-    fn render<L>(&self, builder: &mut AutoCommandBufferBuilder<L>) {
-        for mesh in &self.meshes {
-            self.pipeline.render(builder, mesh, self.set.clone());
-        }
-    }
-}
-
 pub struct Triangle {
     camera: OrbitCamera,
-    mode: bool,
+    cube_mode: bool,
     camera_buffer: Subbuffer<[glm::Mat4; 2]>,
-    equi_renderer: EquiRenderer,
-    cube_renderer: CubeRenderer,
-    simple_renderer: Simple,
+    skybox_pipeline: CubemapPipeline,
+    equi_set: Arc<DescriptorSet>,
+    cube_set: Arc<DescriptorSet>,
+    gltf_pipeline: GltfPipeline,
+    gltf_info: GltfRenderInfo,
     allocators: Allocators,
 }
 impl Triangle {
@@ -117,44 +103,107 @@ impl Triangle {
         )
         .unwrap();
 
-        let equi_pipeline = EquirectangularRenderer::new(allocators.mem.clone(), subpass.clone());
-        let cube_pipeline = CubemapRenderer::new(allocators.mem.clone(), subpass.clone());
-        let simple_pipeline = SimpleRenderer::new(device, subpass);
+        let camera_set_layout = DescriptorSetLayout::new(
+            device.clone(),
+            DescriptorSetLayoutCreateInfo {
+                bindings: BTreeMap::from([(
+                    0,
+                    DescriptorSetLayoutBinding {
+                        stages: ShaderStages::VERTEX,
+                        ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::UniformBuffer)
+                    },
+                )]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let camera_set = DescriptorSet::new(
+            allocators.set.clone(),
+            camera_set_layout.clone(),
+            [WriteDescriptorSet::buffer(0, camera_buffer.clone())],
+            [],
+        )
+        .unwrap();
 
-        let equi_sets = equi_pipeline
-            .create_sets(allocators.set.clone(), camera_buffer.clone(), equi_view)
-            .to_vec();
-        let cube_sets = cube_pipeline
-            .create_sets(allocators.set.clone(), camera_buffer.clone(), cube_view)
-            .to_vec();
-        let simple_set = simple_pipeline.create_sets(allocators.set.clone(), camera_buffer.clone());
+        let cubemap_set_layout = DescriptorSetLayout::new(
+            device.clone(),
+            DescriptorSetLayoutCreateInfo {
+                bindings: BTreeMap::from([(
+                    0,
+                    DescriptorSetLayoutBinding {
+                        stages: ShaderStages::FRAGMENT,
+                        ..DescriptorSetLayoutBinding::descriptor_type(
+                            DescriptorType::CombinedImageSampler,
+                        )
+                    },
+                )]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        let meshes = SimpleMesh::new(allocators.mem.clone(), "assets/monke.obj");
+        let sampler = Sampler::new(
+            device.clone(),
+            SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+        )
+        .unwrap();
+        let equi_set = DescriptorSet::new(
+            allocators.set.clone(),
+            cubemap_set_layout.clone(),
+            [WriteDescriptorSet::image_view_sampler(
+                0,
+                equi_view,
+                sampler.clone(),
+            )],
+            [],
+        )
+        .unwrap();
+        let cube_set = DescriptorSet::new(
+            allocators.set.clone(),
+            cubemap_set_layout.clone(),
+            [WriteDescriptorSet::image_view_sampler(
+                0, cube_view, sampler,
+            )],
+            [],
+        )
+        .unwrap();
+
+        // let equi_pipeline = EquirectangularRenderer::new(
+        //     allocators.mem.clone(),
+        //     vec![camera_set_layout.clone(), cubemap_set_layout.clone()],
+        //     subpass.clone(),
+        // );
+        // let cube_pipeline = CubemapRenderer::new(
+        //     allocators.mem.clone(),
+        //     vec![camera_set_layout.clone(), cubemap_set_layout],
+        //     subpass.clone(),
+        // );
+        let skybox_pipeline = CubemapPipeline::new(
+            allocators.mem.clone(),
+            vec![camera_set_layout.clone(), cubemap_set_layout],
+            subpass.clone(),
+        );
+        let gltf_pipeline = GltfPipeline::new(&device, vec![camera_set_layout], subpass);
+        let meshes = load_gltf(&allocators.mem, "assets/DamagedHelmet.glb");
 
         Self {
             camera,
             allocators,
             camera_buffer,
-            equi_renderer: EquiRenderer {
-                pipeline: equi_pipeline,
-                sets: equi_sets,
-            },
-            cube_renderer: CubeRenderer {
-                pipeline: cube_pipeline,
-                sets: cube_sets,
-            },
-            simple_renderer: Simple {
-                pipeline: simple_pipeline,
-                set: simple_set,
+            cube_mode: false,
+            gltf_pipeline,
+            gltf_info: GltfRenderInfo {
                 meshes,
+                sets: camera_set,
             },
-
-            mode: false,
+            skybox_pipeline,
+            equi_set,
+            cube_set,
         }
     }
 
     pub fn ui(&mut self, ui: &mut egui::Ui) {
-        ui.toggle_value(&mut self.mode, "text");
+        ui.toggle_value(&mut self.cube_mode, "text");
 
         egui::Frame::canvas(ui.style()).show(ui, |ui| {
             let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
@@ -168,33 +217,27 @@ impl Triangle {
             self.camera.zoom += self.camera.zoom * -smooth_scroll.y * 0.003;
             self.camera.clamp();
 
-            let equi_renderer = self.equi_renderer.clone();
-            let cube_renderer = self.cube_renderer.clone();
-            let simple_renderer = self.simple_renderer.clone();
-            let camera = self.camera;
-            let camera_buffer = self.camera_buffer.clone();
-            let mode = self.mode;
+            let slf = self.clone();
 
             let callback = egui::PaintCallback {
                 rect,
                 callback: Arc::new(CallbackFn::new(move |info, context| {
-                    let mut buffer = camera_buffer.write().unwrap();
+                    let mut buffer = slf.camera_buffer.write().unwrap();
                     *buffer = [
-                        camera.look_at(),
-                        camera.perspective(info.viewport.aspect_ratio()),
+                        slf.camera.look_at(),
+                        slf.camera.perspective(info.viewport.aspect_ratio()),
                     ];
 
-                    if mode {
-                        cube_renderer
-                            .pipeline
-                            .render(context.builder, cube_renderer.sets.clone());
+                    slf.gltf_pipeline
+                        .clone()
+                        .render(slf.gltf_info.clone(), context.builder);
+                    if slf.cube_mode {
+                        slf.skybox_pipeline
+                            .render_cube(context.builder, slf.cube_set.clone());
                     } else {
-                        equi_renderer
-                            .pipeline
-                            .render(context.builder, equi_renderer.sets.clone());
+                        slf.skybox_pipeline
+                            .render_equi(context.builder, slf.equi_set.clone());
                     }
-
-                    simple_renderer.render(context.builder);
                 })),
             };
             ui.painter().add(callback);

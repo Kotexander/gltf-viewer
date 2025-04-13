@@ -78,21 +78,34 @@ struct App {
 }
 impl App {
     fn new(event_loop: &EventLoop<()>) -> Self {
+        let debug_info = if cfg!(debug_assertions) {
+            Some(debug_info())
+        } else {
+            None
+        };
         let mut required_extensions = Surface::required_extensions(event_loop).unwrap();
-        required_extensions.ext_debug_utils = true;
+        if debug_info.is_some() {
+            required_extensions.ext_debug_utils = true;
+        }
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
             ..Default::default()
         };
-        let debug_info = debug_info();
         let context = VulkanoContext::new(VulkanoConfig {
             instance_create_info: InstanceCreateInfo {
                 enabled_extensions: required_extensions,
-                enabled_layers: vec!["VK_LAYER_KHRONOS_validation".to_owned()],
-                debug_utils_messengers: vec![debug_info.clone()],
+                enabled_layers: if debug_info.is_some() {
+                    vec!["VK_LAYER_KHRONOS_validation".to_owned()]
+                } else {
+                    vec![]
+                },
+                debug_utils_messengers: debug_info
+                    .clone()
+                    .map(|info| vec![info])
+                    .unwrap_or_default(),
                 ..Default::default()
             },
-            debug_create_info: Some(debug_info),
+            debug_create_info: debug_info,
             device_extensions,
             print_device_name: true,
             device_priority_fn: Arc::new(|_| 0),
@@ -135,8 +148,9 @@ impl ApplicationHandler for App {
             |swapchain_info| {
                 swapchain_info.image_format = Format::R8G8B8A8_SRGB;
                 swapchain_info.image_usage |= ImageUsage::TRANSFER_DST;
-                // swapchain_info.present_mode = PresentMode::Mailbox;
-                // swapchain_info.min_image_count = 5;
+                // log::info!("Present Mode: {:?}", swapchain_info.present_mode);
+                swapchain_info.min_image_count += 1;
+                // swapchain_info.present_mode = vulkano::swapchain::PresentMode::Mailbox;
             },
         );
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
@@ -232,13 +246,14 @@ impl ApplicationHandler for App {
                             .then_execute(renderer.graphics_queue(), command_buffer)
                             .unwrap();
                         renderer.present(after_future.boxed(), true);
+
+                        // renderer.present(before_future, false);
                     }
                     Err(vulkano::VulkanError::OutOfDate) => {
                         renderer.resize();
                     }
                     Err(e) => panic!("Failed to acquire swapchain future: {}", e),
                 };
-
                 self.windows.get_primary_window().unwrap().request_redraw();
             }
             _ => {}
