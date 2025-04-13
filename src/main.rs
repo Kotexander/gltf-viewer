@@ -212,10 +212,7 @@ impl ApplicationHandler for App {
             WindowEvent::RedrawRequested => {
                 gui.immediate_ui(|gui| {
                     let ctx = gui.context();
-
-                    egui::CentralPanel::default().show(&ctx, |ui| {
-                        triangle.ui(ui);
-                    });
+                    triangle.ui(&ctx);
                 });
 
                 match renderer.acquire(None, |views| {

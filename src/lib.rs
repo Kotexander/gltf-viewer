@@ -202,46 +202,111 @@ impl Triangle {
         }
     }
 
-    pub fn ui(&mut self, ui: &mut egui::Ui) {
-        ui.toggle_value(&mut self.cube_mode, "text");
+    pub fn ui(&mut self, ctx: &egui::Context) {
+        egui::SidePanel::right("Settings").show(ctx, |ui| {
+            ui.heading("Settings");
 
-        egui::Frame::canvas(ui.style()).show(ui, |ui| {
-            let (rect, response) = ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
+            ui.separator();
 
-            let drag_delta = response.drag_motion() * 0.005;
-            self.camera.pitch -= drag_delta.y;
-            self.camera.yaw += drag_delta.x;
-            self.camera.wrap();
+            ui.label("Camera");
+            ui.collapsing("", |ui| {
+                ui.label("Pitch");
+                ui.drag_angle(&mut self.camera.pitch);
+                ui.label("Yaw");
+                ui.drag_angle(&mut self.camera.yaw);
 
-            let smooth_scroll = response.ctx.input(|i| i.smooth_scroll_delta);
-            self.camera.zoom += self.camera.zoom * -smooth_scroll.y * 0.003;
-            self.camera.clamp();
+                ui.separator();
 
-            let slf = self.clone();
+                ui.label("Near");
+                let diff = 0.01;
+                let old_near = self.camera.near;
+                ui.add(
+                    egui::DragValue::new(&mut self.camera.near)
+                        .range(diff..=self.camera.far - diff)
+                        .speed(0.1),
+                );
+                ui.label("Far");
+                ui.add(
+                    egui::DragValue::new(&mut self.camera.far)
+                        .range(old_near + diff..=f32::INFINITY)
+                        .speed(0.1),
+                );
 
-            let callback = egui::PaintCallback {
-                rect,
-                callback: Arc::new(CallbackFn::new(move |info, context| {
-                    let mut buffer = slf.camera_buffer.write().unwrap();
-                    *buffer = [
-                        slf.camera.look_at(),
-                        slf.camera.perspective(info.viewport.aspect_ratio()),
-                    ];
+                ui.separator();
 
-                    slf.gltf_pipeline
-                        .clone()
-                        .render(slf.gltf_info.clone(), context.builder);
-                    if slf.cube_mode {
-                        slf.skybox_pipeline
-                            .render_cube(context.builder, slf.cube_set.clone());
-                    } else {
-                        slf.skybox_pipeline
-                            .render_equi(context.builder, slf.equi_set.clone());
-                    }
-                })),
-            };
-            ui.painter().add(callback);
+                ui.label("Target");
+                ui.add(
+                    egui::DragValue::new(&mut self.camera.target.x)
+                        .prefix("x: ")
+                        .speed(0.1),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.camera.target.y)
+                        .prefix("y: ")
+                        .speed(0.1),
+                );
+                ui.add(
+                    egui::DragValue::new(&mut self.camera.target.z)
+                        .prefix("z: ")
+                        .speed(0.1),
+                );
+            });
+
+            ui.separator();
+
+            ui.label("Skybox");
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(!self.cube_mode, "Equirectangular")
+                    .clicked()
+                {
+                    self.cube_mode = false;
+                }
+                if ui.selectable_label(self.cube_mode, "Cubemap").clicked() {
+                    self.cube_mode = true;
+                }
+            })
         });
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                let (rect, response) =
+                    ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
+
+                let drag_delta = response.drag_motion() * 0.005;
+                self.camera.pitch -= drag_delta.y;
+                self.camera.yaw += drag_delta.x;
+                self.camera.wrap();
+
+                let smooth_scroll = response.ctx.input(|i| i.smooth_scroll_delta);
+                self.camera.zoom += self.camera.zoom * -smooth_scroll.y * 0.003;
+                self.camera.clamp();
+
+                let slf = self.clone();
+
+                let callback = egui::PaintCallback {
+                    rect,
+                    callback: Arc::new(CallbackFn::new(move |info, context| {
+                        let mut buffer = slf.camera_buffer.write().unwrap();
+                        *buffer = [
+                            slf.camera.look_at(),
+                            slf.camera.perspective(info.viewport.aspect_ratio()),
+                        ];
+
+                        slf.gltf_pipeline
+                            .clone()
+                            .render(slf.gltf_info.clone(), context.builder);
+                        if slf.cube_mode {
+                            slf.skybox_pipeline
+                                .render_cube(context.builder, slf.cube_set.clone());
+                        } else {
+                            slf.skybox_pipeline
+                                .render_equi(context.builder, slf.equi_set.clone());
+                        }
+                    })),
+                };
+                ui.painter().add(callback);
+            });
     }
 }
 

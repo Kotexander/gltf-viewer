@@ -30,9 +30,6 @@ use vulkano::{
     render_pass::Subpass,
 };
 
-// pub mod cubemap;
-// pub mod equirectangular;
-
 #[repr(C)]
 #[derive(BufferContents, Vertex)]
 struct CubemapVertex {
