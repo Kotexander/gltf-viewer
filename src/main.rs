@@ -1,7 +1,8 @@
+use egui_file::FileDialog;
 use egui_winit_vulkano::{Gui, GuiConfig};
 use frameinfo::FrameInfo;
 use gltf_viewer::{Allocators, Triangle};
-use std::sync::Arc;
+use std::{ffi::OsStr, sync::Arc};
 use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, SubpassBeginInfo, SubpassContents,
@@ -68,13 +69,18 @@ fn debug_info() -> DebugUtilsMessengerCreateInfo {
     }
 }
 
+struct Window {
+    gui: Gui,
+    triangle: Triangle,
+    frame_info: FrameInfo,
+    file_picker: FileDialog,
+}
+
 struct App {
     context: VulkanoContext,
     windows: VulkanoWindows,
     allocators: Allocators,
-    gui: Option<Gui>,
-    triangle: Option<Triangle>,
-    frame_info: Option<FrameInfo>,
+    window: Option<Window>,
 }
 impl App {
     fn new(event_loop: &EventLoop<()>) -> Self {
@@ -137,9 +143,7 @@ impl App {
             context,
             windows,
             allocators,
-            triangle: None,
-            gui: None,
-            frame_info: None,
+            window: None,
         }
     }
 }
@@ -152,8 +156,7 @@ impl ApplicationHandler for App {
             |swapchain_info| {
                 swapchain_info.image_format = Format::R8G8B8A8_SRGB;
                 swapchain_info.image_usage |= ImageUsage::TRANSFER_DST;
-                // log::info!("Present Mode: {:?}", swapchain_info.present_mode);
-                swapchain_info.min_image_count += 1;
+                // swapchain_info.min_image_count += 1;
                 // swapchain_info.present_mode = vulkano::swapchain::PresentMode::Mailbox;
             },
         );
@@ -176,19 +179,23 @@ impl ApplicationHandler for App {
             },
         );
 
-        let triangle = Triangle::new(
-            self.context.device().clone(),
-            self.context
-                .transfer_queue()
-                .unwrap_or(self.context.graphics_queue())
-                .clone(),
-            self.allocators.clone(),
-            frame_info.subpass().clone(),
-        );
-
-        self.gui = Some(gui);
-        self.triangle = Some(triangle);
-        self.frame_info = Some(frame_info);
+        let triangle = Triangle::new(self.allocators.clone(), frame_info.subpass().clone());
+        let mut file_picker =
+            FileDialog::open_file(Some(std::env::current_dir().unwrap_or(".".into())))
+                .show_new_folder(false)
+                .show_rename(false)
+                .multi_select(false)
+                .show_files_filter(Box::new({
+                    let patterns = [OsStr::new("glb"), OsStr::new("gltf")];
+                    move |path| path.extension().is_some_and(|ext| patterns.contains(&ext))
+                }));
+        file_picker.open();
+        self.window = Some(Window {
+            gui,
+            triangle,
+            frame_info,
+            file_picker,
+        });
     }
 
     fn window_event(
@@ -198,11 +205,9 @@ impl ApplicationHandler for App {
         event: WindowEvent,
     ) {
         let renderer = self.windows.get_primary_renderer_mut().unwrap();
-        let triangle = self.triangle.as_mut().unwrap();
-        let gui = self.gui.as_mut().unwrap();
-        let frame_info = self.frame_info.as_mut().unwrap();
+        let window = self.window.as_mut().unwrap();
 
-        gui.update(&event);
+        window.gui.update(&event);
         match event {
             WindowEvent::CloseRequested => {
                 event_loop.exit();
@@ -214,13 +219,46 @@ impl ApplicationHandler for App {
                 renderer.resize();
             }
             WindowEvent::RedrawRequested => {
-                gui.immediate_ui(|gui| {
+                window.gui.immediate_ui(|gui| {
                     let ctx = gui.context();
-                    triangle.ui(&ctx);
+                    egui::SidePanel::right("Right").show(&ctx, |ui| {
+                        ui.heading("Settings");
+
+                        ui.separator();
+
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !window.triangle.loading(),
+                                    egui::Button::new("Open glTF"),
+                                )
+                                .clicked()
+                            {
+                                window.file_picker.open();
+                            }
+                            if window.triangle.loading() {
+                                ui.spinner();
+                            }
+                        });
+
+                        ui.separator();
+
+                        window.triangle.side(ui);
+                    });
+                    if window.file_picker.show(&ctx).selected() {
+                        window.triangle.load_gltf(
+                            window.file_picker.path().unwrap().into(),
+                            self.context
+                                .transfer_queue()
+                                .unwrap_or(self.context.graphics_queue())
+                                .clone(),
+                        );
+                    }
+                    window.triangle.ui(&ctx);
                 });
 
                 match renderer.acquire(None, |views| {
-                    frame_info.recreate(views.to_vec());
+                    window.frame_info.recreate(views.to_vec());
                 }) {
                     Ok(before_future) => {
                         let mut builder = AutoCommandBufferBuilder::primary(
@@ -229,16 +267,23 @@ impl ApplicationHandler for App {
                             CommandBufferUsage::OneTimeSubmit,
                         )
                         .unwrap();
+
+                        window.triangle.update(&mut builder);
+
                         builder
                             .begin_render_pass(
-                                frame_info.render_pass_info(renderer.image_index() as usize),
+                                window
+                                    .frame_info
+                                    .render_pass_info(renderer.image_index() as usize),
                                 SubpassBeginInfo {
                                     contents: SubpassContents::SecondaryCommandBuffers,
                                     ..Default::default()
                                 },
                             )
                             .unwrap();
-                        let cb = gui.draw_on_subpass_image(renderer.swapchain_image_size());
+                        let cb = window
+                            .gui
+                            .draw_on_subpass_image(renderer.swapchain_image_size());
                         builder.execute_commands(cb).unwrap();
                         builder.end_render_pass(Default::default()).unwrap();
 
@@ -246,9 +291,8 @@ impl ApplicationHandler for App {
                         let after_future = before_future
                             .then_execute(renderer.graphics_queue(), command_buffer)
                             .unwrap();
-                        renderer.present(after_future.boxed(), true);
 
-                        // renderer.present(before_future, false);
+                        renderer.present(after_future.boxed(), true);
                     }
                     Err(vulkano::VulkanError::OutOfDate) => {
                         renderer.resize();
@@ -273,7 +317,12 @@ impl ApplicationHandler for App {
         event: DeviceEvent,
     ) {
         if let DeviceEvent::MouseMotion { delta } = event {
-            self.gui.as_mut().unwrap().egui_winit.on_mouse_motion(delta);
+            self.window
+                .as_mut()
+                .unwrap()
+                .gui
+                .egui_winit
+                .on_mouse_motion(delta);
         }
     }
 }

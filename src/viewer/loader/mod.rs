@@ -2,7 +2,7 @@ use crate::Allocators;
 use mesh::Mesh;
 use node::Node;
 use scene::Scene;
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SecondaryAutoCommandBuffer},
     device::Queue,
@@ -97,7 +97,7 @@ impl GltfLoader {
         allocators: Allocators,
         queue: Arc<Queue>,
         // material_set_layout: Arc<DescriptorSetLayout>,
-        path: &str,
+        path: impl AsRef<Path>,
     ) -> gltf::Result<Self> {
         let (document, buffers, images) = gltf::import(path)?;
 

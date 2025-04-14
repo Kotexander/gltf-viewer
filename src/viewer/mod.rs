@@ -110,7 +110,7 @@ pub struct GltfPipeline {
 }
 impl GltfPipeline {
     pub fn new(
-        device: &Arc<Device>,
+        device: Arc<Device>,
         set_layouts: Vec<Arc<DescriptorSetLayout>>,
         subpass: Subpass,
     ) -> Self {
@@ -142,7 +142,7 @@ impl GltfPipeline {
         .unwrap();
 
         let pipeline = GraphicsPipeline::new(
-            device.clone(),
+            device,
             None,
             GraphicsPipelineCreateInfo {
                 stages: stages.into_iter().collect(),

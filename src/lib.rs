@@ -1,40 +1,30 @@
 use camera::OrbitCamera;
-use cubemap::CubemapPipeline;
 use egui_winit_vulkano::CallbackFn;
 use image::EncodableLayout;
 use nalgebra_glm as glm;
-use std::{collections::BTreeMap, sync::Arc};
-use viewer::{GltfPipeline, GltfRenderInfo, loader::GltfLoader};
+use renderer::Renderer;
+use std::{path::PathBuf, sync::Arc, thread::JoinHandle};
+use viewer::{GltfRenderInfo, loader::GltfLoader};
 use vulkano::{
     DeviceSize,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
-        PrimaryCommandBufferAbstract, allocator::StandardCommandBufferAllocator,
+        AutoCommandBufferBuilder, CopyBufferToImageInfo, PrimaryAutoCommandBuffer,
+        SecondaryAutoCommandBuffer, allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
-        DescriptorSet, WriteDescriptorSet,
-        allocator::StandardDescriptorSetAllocator,
-        layout::{
-            DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
-            DescriptorType,
-        },
+        DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
     },
-    device::{Device, Queue},
+    device::Queue,
     format::Format,
-    image::{
-        Image, ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage,
-        sampler::{Sampler, SamplerCreateInfo},
-        view::{ImageView, ImageViewCreateInfo, ImageViewType},
-    },
+    image::{Image, ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     render_pass::Subpass,
-    shader::ShaderStages,
-    sync::GpuFuture,
 };
 
 mod camera;
 mod cubemap;
+mod renderer;
 mod viewer;
 
 #[derive(Clone)]
@@ -44,25 +34,20 @@ pub struct Allocators {
     pub set: Arc<StandardDescriptorSetAllocator>,
 }
 
-#[derive(Clone)]
 pub struct Triangle {
     camera: OrbitCamera,
-    cube_mode: bool,
     camera_buffer: Subbuffer<[glm::Mat4; 2]>,
-    skybox_pipeline: CubemapPipeline,
-    equi_set: Arc<DescriptorSet>,
-    cube_set: Arc<DescriptorSet>,
-    gltf_pipeline: GltfPipeline,
-    gltf_info: GltfRenderInfo,
+    camera_set: Arc<DescriptorSet>,
+
+    renderer: Renderer,
+
+    gltf_job: Option<JoinHandle<(GltfRenderInfo, Arc<SecondaryAutoCommandBuffer>)>>,
+    skybox_job: Option<JoinHandle<(Arc<Image>, Arc<SecondaryAutoCommandBuffer>)>>,
+
     allocators: Allocators,
 }
 impl Triangle {
-    pub fn new(
-        device: Arc<Device>,
-        transfer_queue: Arc<Queue>,
-        allocators: Allocators,
-        subpass: Subpass,
-    ) -> Self {
+    pub fn new(allocators: Allocators, subpass: Subpass) -> Self {
         let camera = OrbitCamera::default();
         let camera_buffer = Buffer::from_data(
             allocators.mem.clone(),
@@ -79,207 +64,115 @@ impl Triangle {
         )
         .unwrap();
 
-        let camera_set_layout = DescriptorSetLayout::new(
-            device.clone(),
-            DescriptorSetLayoutCreateInfo {
-                bindings: BTreeMap::from([(
-                    0,
-                    DescriptorSetLayoutBinding {
-                        stages: ShaderStages::VERTEX,
-                        ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::UniformBuffer)
-                    },
-                )]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-        let cubemap_set_layout = DescriptorSetLayout::new(
-            device.clone(),
-            DescriptorSetLayoutCreateInfo {
-                bindings: BTreeMap::from([(
-                    0,
-                    DescriptorSetLayoutBinding {
-                        stages: ShaderStages::FRAGMENT,
-                        ..DescriptorSetLayoutBinding::descriptor_type(
-                            DescriptorType::CombinedImageSampler,
-                        )
-                    },
-                )]),
-                ..Default::default()
-            },
-        )
-        .unwrap();
+        let renderer = Renderer::new(allocators.mem.clone(), subpass);
 
         let camera_set = DescriptorSet::new(
             allocators.set.clone(),
-            camera_set_layout.clone(),
+            renderer.camera_set_layout.clone(),
             [WriteDescriptorSet::buffer(0, camera_buffer.clone())],
             [],
         )
         .unwrap();
 
-        let mut loader = GltfLoader::new(
-            allocators.clone(),
-            transfer_queue.clone(),
-            "assets/DamagedHelmet.glb",
-            // "assets/BoomBoxWithAxes.glb",
-            // "assets/BoomBox.glb",
-            // "assets/OrientationTest.glb",
-        )
-        .unwrap();
-        let scene = dbg!(loader.load_default_scene()).unwrap();
-        let gltf_info = GltfRenderInfo::from_scene(&allocators.mem, &scene, camera_set.clone());
-
-        let mut builder = AutoCommandBufferBuilder::secondary(
-            allocators.cmd.clone(),
-            transfer_queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-            Default::default(),
-        )
-        .unwrap();
-
-        let equi_image = load_skybox(allocators.mem.clone(), &mut builder);
-        let cube_image = load_cubemap(allocators.mem.clone(), &mut builder);
-
-        let cb1 = builder.build().unwrap();
-        let cb2 = loader.build();
-
-        let mut builder = AutoCommandBufferBuilder::primary(
-            allocators.cmd.clone(),
-            transfer_queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-        builder.execute_commands_from_vec(vec![cb1, cb2]).unwrap();
-        let cb = builder.build().unwrap();
-        cb.execute(transfer_queue)
-            .unwrap()
-            .then_signal_fence_and_flush()
-            .unwrap()
-            .wait(None)
-            .unwrap();
-
-        let equi_view = ImageView::new_default(equi_image).unwrap();
-        let cube_view = ImageView::new(
-            cube_image.clone(),
-            ImageViewCreateInfo {
-                view_type: ImageViewType::Cube,
-                format: cube_image.format(),
-                subresource_range: cube_image.subresource_range(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
-        let sampler = Sampler::new(
-            device.clone(),
-            SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-        )
-        .unwrap();
-        let equi_set = DescriptorSet::new(
-            allocators.set.clone(),
-            cubemap_set_layout.clone(),
-            [WriteDescriptorSet::image_view_sampler(
-                0,
-                equi_view,
-                sampler.clone(),
-            )],
-            [],
-        )
-        .unwrap();
-        let cube_set = DescriptorSet::new(
-            allocators.set.clone(),
-            cubemap_set_layout.clone(),
-            [WriteDescriptorSet::image_view_sampler(
-                0, cube_view, sampler,
-            )],
-            [],
-        )
-        .unwrap();
-
-        let skybox_pipeline = CubemapPipeline::new(
-            allocators.mem.clone(),
-            vec![camera_set_layout.clone(), cubemap_set_layout],
-            subpass.clone(),
-        );
-        let gltf_pipeline = GltfPipeline::new(&device, vec![camera_set_layout], subpass);
-
         Self {
             camera,
             allocators,
             camera_buffer,
-            cube_mode: false,
-            gltf_pipeline,
-            gltf_info,
-            skybox_pipeline,
-            equi_set,
-            cube_set,
+            renderer,
+            camera_set,
+            gltf_job: None,
+            skybox_job: None,
         }
     }
 
-    pub fn ui(&mut self, ctx: &egui::Context) {
-        egui::SidePanel::right("Settings").show(ctx, |ui| {
-            ui.heading("Settings");
+    pub fn load_gltf(&mut self, path: PathBuf, queue: Arc<Queue>) {
+        if self.gltf_job.is_some() {
+            return;
+        }
+        let allocators = self.allocators.clone();
+        let sets = self.camera_set.clone();
+        let job = std::thread::spawn(move || {
+            let mem = allocators.mem.clone();
+            let mut loader = GltfLoader::new(allocators, queue, &path).unwrap();
+            let info =
+                GltfRenderInfo::from_scene(&mem, &loader.load_default_scene().unwrap(), sets);
+            (info, loader.build())
+        });
+        self.gltf_job = Some(job);
+    }
+    pub fn loading(&self) -> bool {
+        self.gltf_job.is_some()
+    }
+    pub fn update(&mut self, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>) {
+        if self.gltf_job.as_ref().is_some_and(|job| job.is_finished()) {
+            let (info, cb) = self.gltf_job.take().unwrap().join().unwrap();
+            builder.execute_commands(cb).unwrap();
+            self.renderer.gltf_info = Some(info);
+        }
+    }
+
+    pub fn side(&mut self, ui: &mut egui::Ui) {
+        ui.collapsing("Camera", |ui| {
+            ui.label("Pitch");
+            ui.drag_angle(&mut self.camera.pitch);
+            ui.label("Yaw");
+            ui.drag_angle(&mut self.camera.yaw);
 
             ui.separator();
 
-            ui.collapsing("Camera", |ui| {
-                ui.label("Pitch");
-                ui.drag_angle(&mut self.camera.pitch);
-                ui.label("Yaw");
-                ui.drag_angle(&mut self.camera.yaw);
+            ui.label("Near");
+            let diff = 0.01;
+            let old_near = self.camera.near;
+            ui.add(
+                egui::DragValue::new(&mut self.camera.near)
+                    .range(diff..=self.camera.far - diff)
+                    .speed(0.1),
+            );
+            ui.label("Far");
+            ui.add(
+                egui::DragValue::new(&mut self.camera.far)
+                    .range(old_near + diff..=f32::INFINITY)
+                    .speed(0.1),
+            );
 
-                ui.separator();
+            ui.separator();
 
-                ui.label("Near");
-                let diff = 0.01;
-                let old_near = self.camera.near;
-                ui.add(
-                    egui::DragValue::new(&mut self.camera.near)
-                        .range(diff..=self.camera.far - diff)
-                        .speed(0.1),
-                );
-                ui.label("Far");
-                ui.add(
-                    egui::DragValue::new(&mut self.camera.far)
-                        .range(old_near + diff..=f32::INFINITY)
-                        .speed(0.1),
-                );
+            ui.label("Target");
+            ui.add(
+                egui::DragValue::new(&mut self.camera.target.x)
+                    .prefix("x: ")
+                    .speed(0.1),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.camera.target.y)
+                    .prefix("y: ")
+                    .speed(0.1),
+            );
+            ui.add(
+                egui::DragValue::new(&mut self.camera.target.z)
+                    .prefix("z: ")
+                    .speed(0.1),
+            );
+        });
 
-                ui.separator();
-
-                ui.label("Target");
-                ui.add(
-                    egui::DragValue::new(&mut self.camera.target.x)
-                        .prefix("x: ")
-                        .speed(0.1),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.camera.target.y)
-                        .prefix("y: ")
-                        .speed(0.1),
-                );
-                ui.add(
-                    egui::DragValue::new(&mut self.camera.target.z)
-                        .prefix("z: ")
-                        .speed(0.1),
-                );
-            });
-
-            ui.collapsing("Skybox", |ui| {
-                ui.horizontal(|ui| {
-                    if ui
-                        .selectable_label(!self.cube_mode, "Equirectangular")
-                        .clicked()
-                    {
-                        self.cube_mode = false;
-                    }
-                    if ui.selectable_label(self.cube_mode, "Cubemap").clicked() {
-                        self.cube_mode = true;
-                    }
-                })
+        ui.collapsing("Skybox", |ui| {
+            ui.horizontal(|ui| {
+                if ui
+                    .selectable_label(!self.renderer.cube_mode, "Equirectangular")
+                    .clicked()
+                {
+                    self.renderer.cube_mode = false;
+                }
+                if ui
+                    .selectable_label(self.renderer.cube_mode, "Cubemap")
+                    .clicked()
+                {
+                    self.renderer.cube_mode = true;
+                }
             })
         });
+    }
+    pub fn ui(&mut self, ctx: &egui::Context) {
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
@@ -295,27 +188,17 @@ impl Triangle {
                 self.camera.zoom += self.camera.zoom * -smooth_scroll.y * 0.003;
                 self.camera.clamp();
 
-                let slf = self.clone();
+                let mut buffer = self.camera_buffer.write().unwrap();
+                *buffer = [
+                    self.camera.look_at(),
+                    self.camera.perspective(rect.aspect_ratio()),
+                ];
 
+                let renderer = self.renderer.clone();
                 let callback = egui::PaintCallback {
                     rect,
-                    callback: Arc::new(CallbackFn::new(move |info, context| {
-                        let mut buffer = slf.camera_buffer.write().unwrap();
-                        *buffer = [
-                            slf.camera.look_at(),
-                            slf.camera.perspective(info.viewport.aspect_ratio()),
-                        ];
-
-                        slf.gltf_pipeline
-                            .clone()
-                            .render(slf.gltf_info.clone(), context.builder);
-                        if slf.cube_mode {
-                            slf.skybox_pipeline
-                                .render_cube(context.builder, slf.cube_set.clone());
-                        } else {
-                            slf.skybox_pipeline
-                                .render_equi(context.builder, slf.equi_set.clone());
-                        }
+                    callback: Arc::new(CallbackFn::new(move |_info, context| {
+                        renderer.clone().render(context.builder);
                     })),
                 };
                 ui.painter().add(callback);

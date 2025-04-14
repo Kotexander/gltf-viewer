@@ -611,6 +611,12 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "f25c0e292a7ca6d6498557ff1df68f32c99850012b6ea401cf8daf771f22ff53"
 
 [[package]]
+name = "dyn-clone"
+version = "1.0.19"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "1c7a8fb8a9fbf66c1f703fe16184d10ca0ee9d23be5b4436400408ba54a95005"
+
+[[package]]
 name = "ecolor"
 version = "0.31.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -652,6 +658,16 @@ dependencies = [
  "web-time",
  "webbrowser",
  "winit",
+]
+
+[[package]]
+name = "egui_file"
+version = "0.22.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3e7289fecaa1af3f4944a7ac6e1c187d0700e32716c2a4c76d6bad7ffd255d72"
+dependencies = [
+ "dyn-clone",
+ "egui",
 ]
 
 [[package]]
@@ -917,6 +933,7 @@ dependencies = [
  "anyhow",
  "colog",
  "egui",
+ "egui_file",
  "egui_winit_vulkano",
  "gltf",
  "image",
