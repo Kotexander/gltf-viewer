@@ -18,7 +18,7 @@ impl OrbitCamera {
     pub fn eye(&self) -> glm::Vec3 {
         let (sin_yaw, cos_yaw) = self.yaw.sin_cos();
         let (sin_pitch, cos_pitch) = self.pitch.sin_cos();
-        self.target - glm::vec3(sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch) * self.zoom
+        self.target + glm::vec3(sin_yaw * cos_pitch, sin_pitch, cos_yaw * cos_pitch) * self.zoom
     }
     pub fn up(&self) -> glm::Vec3 {
         if self.is_upside_down() {
@@ -29,10 +29,10 @@ impl OrbitCamera {
     }
 
     pub fn look_at(&self) -> glm::Mat4 {
-        glm::look_at_rh(&self.eye(), &self.target, &self.up())
+        glm::look_at_lh(&self.eye(), &self.target, &self.up())
     }
     pub fn perspective(&self, aspect: f32) -> glm::Mat4 {
-        glm::perspective_rh_zo(aspect, self.fov, self.near, self.far)
+        glm::perspective_lh_zo(aspect, self.fov, self.near, self.far)
     }
 
     pub fn is_upside_down(&self) -> bool {

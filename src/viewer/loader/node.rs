@@ -6,7 +6,7 @@ use std::sync::Arc;
 pub struct Node {
     pub index: usize,
     pub name: Option<String>,
-    pub translation: glm::Mat4,
+    pub transform: glm::Mat4,
     pub children: Vec<Arc<Node>>,
     pub mesh: Option<Arc<Mesh>>,
     pub camera: Option<glm::Mat4>,
@@ -16,7 +16,7 @@ impl Node {
         Self {
             index: node.index(),
             name: node.name().map(String::from),
-            translation: node.transform().matrix().into(),
+            transform: node.transform().matrix().into(),
             children: node
                 .children()
                 .map(|child| loader.get_node(child, import))

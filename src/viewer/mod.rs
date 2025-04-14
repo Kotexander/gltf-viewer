@@ -3,12 +3,15 @@ use loader::{
     node::Node,
     scene::Scene,
 };
+use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::AutoCommandBufferBuilder,
     descriptor_set::{DescriptorSet, layout::DescriptorSetLayout},
     device::Device,
     image::SampleCount,
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
         PipelineShaderStageCreateInfo,
@@ -29,23 +32,74 @@ use vulkano::{
 
 pub mod loader;
 
+#[repr(C)]
+#[derive(BufferContents, Vertex, Debug)]
+pub struct Instance {
+    #[format(R32G32B32A32_SFLOAT)]
+    pub model_x: [f32; 4],
+    #[format(R32G32B32A32_SFLOAT)]
+    pub model_y: [f32; 4],
+    #[format(R32G32B32A32_SFLOAT)]
+    pub model_z: [f32; 4],
+    #[format(R32G32B32A32_SFLOAT)]
+    pub model_w: [f32; 4],
+}
+
+#[derive(Clone)]
+pub struct InstancedMesh {
+    primitives: Vec<Primitive>,
+    instances: Subbuffer<[Instance]>,
+}
+
 #[derive(Clone)]
 pub struct GltfRenderInfo {
-    pub meshes: Vec<Primitive>,
+    pub meshes: Vec<InstancedMesh>,
     pub sets: Arc<DescriptorSet>,
 }
 impl GltfRenderInfo {
-    pub fn from_scene(scene: &Scene, sets: Arc<DescriptorSet>) -> GltfRenderInfo {
+    pub fn from_scene(
+        allocator: &Arc<StandardMemoryAllocator>,
+        scene: &Scene,
+        sets: Arc<DescriptorSet>,
+    ) -> GltfRenderInfo {
         let mut meshes = vec![];
-        Self::iter_nodes(&scene.nodes, &mut meshes);
+        Self::iter_nodes(allocator, &scene.nodes, &glm::identity(), &mut meshes);
         Self { meshes, sets }
     }
-    fn iter_nodes(nodes: &[Arc<Node>], meshes: &mut Vec<Primitive>) {
+    fn iter_nodes(
+        allocator: &Arc<StandardMemoryAllocator>,
+        nodes: &[Arc<Node>],
+        transform: &glm::Mat4,
+        meshes: &mut Vec<InstancedMesh>,
+    ) {
         for node in nodes {
+            let transform = transform * node.transform;
             if let Some(mesh) = &node.mesh {
-                meshes.extend_from_slice(&mesh.primitives);
+                let instance = InstancedMesh {
+                    primitives: mesh.primitives.clone(),
+                    instances: Buffer::from_iter(
+                        allocator.clone(),
+                        BufferCreateInfo {
+                            usage: BufferUsage::VERTEX_BUFFER,
+                            ..Default::default()
+                        },
+                        AllocationCreateInfo {
+                            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                            ..Default::default()
+                        },
+                        [Instance {
+                            model_x: transform.data.0[0],
+                            model_y: transform.data.0[1],
+                            model_z: transform.data.0[2],
+                            model_w: transform.data.0[3],
+                        }],
+                    )
+                    .unwrap(),
+                };
+                meshes.push(instance);
             }
-            Self::iter_nodes(&node.children, meshes);
+            Self::iter_nodes(allocator, &node.children, &transform, meshes);
         }
     }
 }
@@ -69,7 +123,9 @@ impl GltfPipeline {
             .entry_point("main")
             .unwrap();
 
-        let vertex_input_state = PrimitiveVertex::per_vertex().definition(&vs).unwrap();
+        let vertex_input_state = [PrimitiveVertex::per_vertex(), Instance::per_instance()]
+            .definition(&vs)
+            .unwrap();
 
         let stages = [
             PipelineShaderStageCreateInfo::new(vs),
@@ -98,7 +154,7 @@ impl GltfPipeline {
                     ..Default::default()
                 }),
                 rasterization_state: Some(RasterizationState {
-                    front_face: FrontFace::Clockwise,
+                    front_face: FrontFace::CounterClockwise,
                     cull_mode: CullMode::Back,
                     ..Default::default()
                 }),
@@ -132,7 +188,12 @@ impl GltfPipeline {
             .unwrap();
         builder.bind_pipeline_graphics(self.pipeline).unwrap();
         for mesh in info.meshes {
-            mesh.render(builder);
+            builder
+                .bind_vertex_buffers(1, mesh.instances.clone())
+                .unwrap();
+            for primitive in mesh.primitives {
+                primitive.render(1, builder);
+            }
         }
     }
 }

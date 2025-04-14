@@ -250,7 +250,7 @@ impl CubemapPipeline {
                 input_assembly_state: Some(InputAssemblyState::default()),
                 viewport_state: Some(ViewportState::default()),
                 rasterization_state: Some(RasterizationState {
-                    front_face: FrontFace::Clockwise,
+                    front_face: FrontFace::CounterClockwise,
                     cull_mode: CullMode::Back,
                     ..Default::default()
                 }),
@@ -297,7 +297,7 @@ layout(location = 0) out vec3 f_position;
 
 void main() {
     gl_Position = (cam.proj * cam.view * vec4(position, 0.0)).xyww;
-    f_position = position;
+    f_position = vec3(-position.x, position.y, position.z);
 }
         "#
     }

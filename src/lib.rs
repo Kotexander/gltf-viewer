@@ -121,12 +121,14 @@ impl Triangle {
         let mut loader = GltfLoader::new(
             allocators.clone(),
             transfer_queue.clone(),
-            // "assets/DamagedHelmet.glb",
-            "assets/BoomBoxWithAxes.glb",
+            "assets/DamagedHelmet.glb",
+            // "assets/BoomBoxWithAxes.glb",
+            // "assets/BoomBox.glb",
+            // "assets/OrientationTest.glb",
         )
         .unwrap();
         let scene = dbg!(loader.load_default_scene()).unwrap();
-        let gltf_info = GltfRenderInfo::from_scene(&scene, camera_set.clone());
+        let gltf_info = GltfRenderInfo::from_scene(&allocators.mem, &scene, camera_set.clone());
 
         let mut builder = AutoCommandBufferBuilder::secondary(
             allocators.cmd.clone(),
@@ -285,8 +287,8 @@ impl Triangle {
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
 
                 let drag_delta = response.drag_motion() * 0.005;
-                self.camera.pitch -= drag_delta.y;
-                self.camera.yaw += drag_delta.x;
+                self.camera.pitch += drag_delta.y;
+                self.camera.yaw -= drag_delta.x;
                 self.camera.wrap();
 
                 let smooth_scroll = response.ctx.input(|i| i.smooth_scroll_delta);

@@ -13,5 +13,5 @@ layout(set = 1, binding = 2) uniform sampler2D ao_sampler;
 
 void main() {
     f_color = vec4((normalize(normal) + 1.0) / 2.0, 1.0);
-    // f_color = vec4(normalize(v_normal), 1.0);
+    // f_color = vec4(normalize(normal), 1.0);
 }

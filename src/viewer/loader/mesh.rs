@@ -110,10 +110,10 @@ impl Primitive {
             ibuf,
         }
     }
-    pub fn render<L>(self, builder: &mut AutoCommandBufferBuilder<L>) {
+    pub fn render<L>(self, instances: u32, builder: &mut AutoCommandBufferBuilder<L>) {
         builder.bind_vertex_buffers(0, self.vbuf).unwrap();
         builder.bind_index_buffer(self.ibuf).unwrap();
-        unsafe { builder.draw_indexed(self.ilen, 1, 0, 0, 0) }.unwrap();
+        unsafe { builder.draw_indexed(self.ilen, instances, 0, 0, 0) }.unwrap();
     }
 }
 
