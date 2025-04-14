@@ -5,7 +5,7 @@ use std::sync::Arc;
 use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, SubpassBeginInfo, SubpassContents,
-        allocator::StandardCommandBufferAllocator,
+        allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
     },
     descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::DeviceExtensions,
@@ -116,7 +116,11 @@ impl App {
 
         let cmd_buf_alloc = Arc::new(StandardCommandBufferAllocator::new(
             context.device().clone(),
-            Default::default(),
+            StandardCommandBufferAllocatorCreateInfo {
+                primary_buffer_count: 16,
+                secondary_buffer_count: 16,
+                ..Default::default()
+            },
         ));
         let set_alloc = Arc::new(StandardDescriptorSetAllocator::new(
             context.device().clone(),

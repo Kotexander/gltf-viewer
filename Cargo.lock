@@ -657,7 +657,7 @@ dependencies = [
 [[package]]
 name = "egui_winit_vulkano"
 version = "0.28.0"
-source = "git+https://github.com/Kotexander/egui_winit_vulkano?branch=allow-depth-buffer#29ab87b1f5c4c9ddb57f68543b42d2a406e08d73"
+source = "git+https://github.com/Kotexander/egui_winit_vulkano?branch=allow-depth-buffer#7fc409f0dff0724a01d022cd8b4ca11a9a7b261c"
 dependencies = [
  "ahash",
  "egui",

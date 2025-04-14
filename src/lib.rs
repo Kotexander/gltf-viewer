@@ -4,7 +4,7 @@ use egui_winit_vulkano::CallbackFn;
 use image::EncodableLayout;
 use nalgebra_glm as glm;
 use std::{collections::BTreeMap, sync::Arc};
-use viewer::{GltfPipeline, GltfRenderInfo, load_gltf};
+use viewer::{GltfPipeline, GltfRenderInfo, loader::GltfLoader};
 use vulkano::{
     DeviceSize,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
@@ -30,6 +30,7 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     render_pass::Subpass,
     shader::ShaderStages,
+    sync::GpuFuture,
 };
 
 mod camera;
@@ -58,7 +59,7 @@ pub struct Triangle {
 impl Triangle {
     pub fn new(
         device: Arc<Device>,
-        queue: Arc<Queue>,
+        transfer_queue: Arc<Queue>,
         allocators: Allocators,
         subpass: Subpass,
     ) -> Self {
@@ -78,31 +79,6 @@ impl Triangle {
         )
         .unwrap();
 
-        let mut builder = AutoCommandBufferBuilder::primary(
-            allocators.cmd.clone(),
-            queue.queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-
-        let equi_image = load_skybox(allocators.mem.clone(), &mut builder);
-        let cube_image = load_cubemap(allocators.mem.clone(), &mut builder);
-
-        let command_buffer = builder.build().unwrap();
-        let _ = command_buffer.execute(queue.clone()).unwrap();
-
-        let equi_view = ImageView::new_default(equi_image).unwrap();
-        let cube_view = ImageView::new(
-            cube_image.clone(),
-            ImageViewCreateInfo {
-                view_type: ImageViewType::Cube,
-                format: cube_image.format(),
-                subresource_range: cube_image.subresource_range(),
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
         let camera_set_layout = DescriptorSetLayout::new(
             device.clone(),
             DescriptorSetLayoutCreateInfo {
@@ -117,14 +93,6 @@ impl Triangle {
             },
         )
         .unwrap();
-        let camera_set = DescriptorSet::new(
-            allocators.set.clone(),
-            camera_set_layout.clone(),
-            [WriteDescriptorSet::buffer(0, camera_buffer.clone())],
-            [],
-        )
-        .unwrap();
-
         let cubemap_set_layout = DescriptorSetLayout::new(
             device.clone(),
             DescriptorSetLayoutCreateInfo {
@@ -137,6 +105,65 @@ impl Triangle {
                         )
                     },
                 )]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        let camera_set = DescriptorSet::new(
+            allocators.set.clone(),
+            camera_set_layout.clone(),
+            [WriteDescriptorSet::buffer(0, camera_buffer.clone())],
+            [],
+        )
+        .unwrap();
+
+        let mut loader = GltfLoader::new(
+            allocators.clone(),
+            transfer_queue.clone(),
+            // "assets/DamagedHelmet.glb",
+            "assets/BoomBoxWithAxes.glb",
+        )
+        .unwrap();
+        let scene = dbg!(loader.load_default_scene()).unwrap();
+        let gltf_info = GltfRenderInfo::from_scene(&scene, camera_set.clone());
+
+        let mut builder = AutoCommandBufferBuilder::secondary(
+            allocators.cmd.clone(),
+            transfer_queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+            Default::default(),
+        )
+        .unwrap();
+
+        let equi_image = load_skybox(allocators.mem.clone(), &mut builder);
+        let cube_image = load_cubemap(allocators.mem.clone(), &mut builder);
+
+        let cb1 = builder.build().unwrap();
+        let cb2 = loader.build();
+
+        let mut builder = AutoCommandBufferBuilder::primary(
+            allocators.cmd.clone(),
+            transfer_queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+        builder.execute_commands_from_vec(vec![cb1, cb2]).unwrap();
+        let cb = builder.build().unwrap();
+        cb.execute(transfer_queue)
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None)
+            .unwrap();
+
+        let equi_view = ImageView::new_default(equi_image).unwrap();
+        let cube_view = ImageView::new(
+            cube_image.clone(),
+            ImageViewCreateInfo {
+                view_type: ImageViewType::Cube,
+                format: cube_image.format(),
+                subresource_range: cube_image.subresource_range(),
                 ..Default::default()
             },
         )
@@ -168,23 +195,12 @@ impl Triangle {
         )
         .unwrap();
 
-        // let equi_pipeline = EquirectangularRenderer::new(
-        //     allocators.mem.clone(),
-        //     vec![camera_set_layout.clone(), cubemap_set_layout.clone()],
-        //     subpass.clone(),
-        // );
-        // let cube_pipeline = CubemapRenderer::new(
-        //     allocators.mem.clone(),
-        //     vec![camera_set_layout.clone(), cubemap_set_layout],
-        //     subpass.clone(),
-        // );
         let skybox_pipeline = CubemapPipeline::new(
             allocators.mem.clone(),
             vec![camera_set_layout.clone(), cubemap_set_layout],
             subpass.clone(),
         );
         let gltf_pipeline = GltfPipeline::new(&device, vec![camera_set_layout], subpass);
-        let meshes = load_gltf(&allocators.mem, "assets/DamagedHelmet.glb");
 
         Self {
             camera,
@@ -192,10 +208,7 @@ impl Triangle {
             camera_buffer,
             cube_mode: false,
             gltf_pipeline,
-            gltf_info: GltfRenderInfo {
-                meshes,
-                sets: camera_set,
-            },
+            gltf_info,
             skybox_pipeline,
             equi_set,
             cube_set,
@@ -208,8 +221,7 @@ impl Triangle {
 
             ui.separator();
 
-            ui.label("Camera");
-            ui.collapsing("", |ui| {
+            ui.collapsing("Camera", |ui| {
                 ui.label("Pitch");
                 ui.drag_angle(&mut self.camera.pitch);
                 ui.label("Yaw");
@@ -252,19 +264,18 @@ impl Triangle {
                 );
             });
 
-            ui.separator();
-
-            ui.label("Skybox");
-            ui.horizontal(|ui| {
-                if ui
-                    .selectable_label(!self.cube_mode, "Equirectangular")
-                    .clicked()
-                {
-                    self.cube_mode = false;
-                }
-                if ui.selectable_label(self.cube_mode, "Cubemap").clicked() {
-                    self.cube_mode = true;
-                }
+            ui.collapsing("Skybox", |ui| {
+                ui.horizontal(|ui| {
+                    if ui
+                        .selectable_label(!self.cube_mode, "Equirectangular")
+                        .clicked()
+                    {
+                        self.cube_mode = false;
+                    }
+                    if ui.selectable_label(self.cube_mode, "Cubemap").clicked() {
+                        self.cube_mode = true;
+                    }
+                })
             })
         });
         egui::CentralPanel::default()
