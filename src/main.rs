@@ -260,15 +260,26 @@ impl ApplicationHandler for App {
                 match renderer.acquire(None, |views| {
                     window.frame_info.recreate(views.to_vec());
                 }) {
-                    Ok(before_future) => {
+                    Ok(mut before_future) => {
+                        if let Some(cb) = window.triangle.update() {
+                            before_future = before_future
+                                .then_execute(
+                                    self.context
+                                        .transfer_queue()
+                                        .unwrap_or(self.context.graphics_queue())
+                                        .clone(),
+                                    cb,
+                                )
+                                .unwrap()
+                                .boxed();
+                        }
+
                         let mut builder = AutoCommandBufferBuilder::primary(
                             self.allocators.cmd.clone(),
                             renderer.graphics_queue().queue_family_index(),
                             CommandBufferUsage::OneTimeSubmit,
                         )
                         .unwrap();
-
-                        window.triangle.update(&mut builder);
 
                         builder
                             .begin_render_pass(

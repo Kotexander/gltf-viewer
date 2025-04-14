@@ -12,6 +12,9 @@ layout(set = 1, binding = 1) uniform sampler2D rm_sampler;
 layout(set = 1, binding = 2) uniform sampler2D ao_sampler;
 
 void main() {
-    f_color = vec4((normalize(normal) + 1.0) / 2.0, 1.0);
+    // f_color = vec4((normalize(normal) + 1.0) / 2.0, 1.0);
     // f_color = vec4(normalize(normal), 1.0);
+
+    f_color = vec4(bc_tex, 0.0, 1.0);
+    f_color = texture(bc_sampler, bc_tex);
 }

@@ -1,123 +1,128 @@
 use crate::Allocators;
+use image::load_images;
+use material::Material;
 use mesh::Mesh;
-use node::Node;
-use scene::Scene;
 use std::{path::Path, sync::Arc};
+use texture::Texture;
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, SecondaryAutoCommandBuffer},
-    device::Queue,
+    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer},
+    descriptor_set::layout::DescriptorSetLayout,
+    format::Format,
+    image::{Image, ImageCreateInfo, ImageUsage, view::ImageView},
+    memory::allocator::AllocationCreateInfo,
 };
 
+mod image;
+mod material;
 pub mod mesh;
-pub mod node;
-pub mod scene;
+mod texture;
 
-pub struct Import {
-    pub document: gltf::Document,
-    pub buffers: Vec<gltf::buffer::Data>,
-    pub images: Vec<gltf::image::Data>,
-}
 pub struct Loader {
     allocators: Allocators,
-    builder: Option<AutoCommandBufferBuilder<SecondaryAutoCommandBuffer>>,
-    queue: Arc<Queue>,
-    nodes: Vec<Arc<Node>>,
+    material_set_layout: Arc<DescriptorSetLayout>,
+    builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+
+    images: Vec<Arc<ImageView>>,
+    textures: Vec<Arc<Texture>>,
+    material: Vec<Arc<Material>>,
     meshes: Vec<Arc<Mesh>>,
+
+    default_texture: Option<Arc<ImageView>>,
 }
 impl Loader {
-    pub fn new(allocators: Allocators, queue: Arc<Queue>) -> Self {
+    fn new(
+        allocators: Allocators,
+        material_set_layout: Arc<DescriptorSetLayout>,
+        queue_family: u32,
+    ) -> Self {
+        let builder = AutoCommandBufferBuilder::primary(
+            allocators.cmd.clone(),
+            queue_family,
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+
         Self {
             allocators,
-            nodes: vec![],
+            material_set_layout,
             meshes: vec![],
-            builder: None,
-            queue,
+            textures: vec![],
+            material: vec![],
+            images: vec![],
+            builder,
+            default_texture: None,
         }
     }
 
-    pub fn builder(&mut self) -> &mut AutoCommandBufferBuilder<SecondaryAutoCommandBuffer> {
-        if self.builder.is_none() {
-            self.builder = Some(
-                AutoCommandBufferBuilder::secondary(
-                    self.allocators.cmd.clone(),
-                    self.queue.queue_family_index(),
-                    CommandBufferUsage::OneTimeSubmit,
-                    Default::default(),
-                )
-                .unwrap(),
-            );
-        }
-        self.builder.as_mut().unwrap()
+    fn load_images(&mut self, document: &gltf::Document, images: Vec<gltf::image::Data>) {
+        self.images = load_images(document, images, &self.allocators.mem, &mut self.builder);
     }
 
-    fn add_node(&mut self, node: Arc<Node>) {
-        match self
-            .nodes
-            .binary_search_by_key(&node.index, |node| node.index)
-        {
-            Ok(_) => panic!("nodes[{}] already exists.", node.index),
-            Err(i) => self.nodes.insert(i, node),
-        }
-    }
-    pub fn get_node(&mut self, node: gltf::Node, import: &Import) -> Arc<Node> {
-        match self
-            .nodes
-            .binary_search_by_key(&node.index(), |node| node.index)
-        {
-            Ok(i) => self.nodes[i].clone(),
-            Err(_) => {
-                let node = Arc::new(Node::from_loader(node, import, self));
-                self.add_node(node.clone());
-                node
-            }
-        }
+    fn load_textures(&mut self, document: &gltf::Document) {
+        self.textures = document
+            .textures()
+            .map(|texture| Arc::new(Texture::from_loader(texture, self)))
+            .collect();
     }
 
-    pub fn get_mesh(&mut self, mesh: gltf::Mesh, import: &Import) -> Arc<Mesh> {
-        match self
-            .meshes
-            .binary_search_by_key(&mesh.index(), |mesh| mesh.index)
-        {
-            Ok(i) => self.meshes[i].clone(),
-            Err(i) => {
-                let mesh = Arc::new(Mesh::from_loader(mesh, import, self));
-                self.meshes.insert(i, mesh.clone());
-                mesh
-            }
+    fn load_materials(&mut self, document: &gltf::Document) {
+        self.material = document
+            .materials()
+            .map(|material| Arc::new(Material::from_loader(material, self)))
+            .collect();
+    }
+
+    fn load_meshes(&mut self, document: &gltf::Document, buffers: &[gltf::buffer::Data]) {
+        self.meshes = document
+            .meshes()
+            .map(|mesh| Arc::new(Mesh::from_loader(mesh, buffers, self)))
+            .collect();
+    }
+
+    fn get_default_texture(&mut self) -> &Arc<ImageView> {
+        if self.default_texture.is_none() {
+            let image = Image::new(
+                self.allocators.mem.clone(),
+                ImageCreateInfo {
+                    usage: ImageUsage::SAMPLED,
+                    extent: [1; 3],
+                    format: Format::R8G8B8A8_SRGB,
+                    ..Default::default()
+                },
+                AllocationCreateInfo::default(),
+            )
+            .unwrap();
+            let view = ImageView::new_default(image).unwrap();
+            self.default_texture = Some(view);
         }
+        self.default_texture.as_ref().unwrap()
     }
 }
 
 pub struct GltfLoader {
-    import: Import,
-    loader: Loader,
+    pub cb: Arc<PrimaryAutoCommandBuffer>,
+    pub meshes: Vec<Arc<Mesh>>,
+    pub document: gltf::Document,
 }
 impl GltfLoader {
     pub fn new(
         allocators: Allocators,
-        queue: Arc<Queue>,
-        // material_set_layout: Arc<DescriptorSetLayout>,
+        material_set_layout: Arc<DescriptorSetLayout>,
+        queue_family: u32,
         path: impl AsRef<Path>,
     ) -> gltf::Result<Self> {
         let (document, buffers, images) = gltf::import(path)?;
 
-        Ok(Self {
-            import: Import {
-                document,
-                buffers,
-                images,
-            },
-            loader: Loader::new(allocators, queue),
-        })
-    }
-    pub fn load_default_scene(&mut self) -> Option<Scene> {
-        self.import
-            .document
-            .default_scene()
-            .map(|scene| Scene::from_loader(scene, &self.import, &mut self.loader))
-    }
+        let mut loader = Loader::new(allocators, material_set_layout, queue_family);
+        loader.load_images(&document, images);
+        loader.load_textures(&document);
+        loader.load_materials(&document);
+        loader.load_meshes(&document, &buffers);
 
-    pub fn build(&mut self) -> Arc<SecondaryAutoCommandBuffer> {
-        self.loader.builder.take().unwrap().build().unwrap()
+        Ok(Self {
+            cb: loader.builder.build().unwrap(),
+            meshes: loader.meshes,
+            document,
+        })
     }
 }

@@ -1,10 +1,13 @@
-use super::{Import, Loader};
+use std::sync::Arc;
+
+use super::Loader;
 use nalgebra_glm as glm;
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{AutoCommandBufferBuilder, CopyBufferInfo},
+    descriptor_set::DescriptorSet,
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
-    pipeline::graphics::vertex_input::Vertex,
+    pipeline::{PipelineBindPoint, PipelineLayout, graphics::vertex_input::Vertex},
 };
 
 #[repr(C)]
@@ -24,16 +27,20 @@ pub struct PrimitiveVertex {
 
 #[derive(Clone, Debug)]
 pub struct Primitive {
+    material_set: Arc<DescriptorSet>,
     vbuf: Subbuffer<[PrimitiveVertex]>,
     ibuf: Subbuffer<[u32]>,
     ilen: u32,
 }
 impl Primitive {
-    pub fn new(primitive: gltf::Primitive, import: &Import, loader: &mut Loader) -> Self {
-        let reader =
-            primitive.reader(|buffer| import.buffers.get(buffer.index()).map(|d| d.0.as_slice()));
+    pub fn new(
+        primitive: gltf::Primitive,
+        buffers: &[gltf::buffer::Data],
+        loader: &mut Loader,
+    ) -> Self {
+        let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice()));
 
-        let vertices = reader
+        let mut vertices: Vec<_> = reader
             .read_positions()
             .unwrap()
             .zip(reader.read_normals().unwrap())
@@ -43,8 +50,19 @@ impl Primitive {
                 bc_tex: glm::Vec2::zeros(),
                 rm_tex: glm::Vec2::zeros(),
                 ao_tex: glm::Vec2::zeros(),
-            });
+            })
+            .collect();
         let indices = reader.read_indices().unwrap().into_u32();
+
+        let material = &loader.material[primitive.material().index().unwrap()];
+        for (i, tex) in reader
+            .read_tex_coords(material.bc_tex.unwrap())
+            .unwrap()
+            .into_f32()
+            .enumerate()
+        {
+            vertices[i].bc_tex = tex.into();
+        }
 
         let vbuf_stage = Buffer::from_iter(
             loader.allocators.mem.clone(),
@@ -96,11 +114,12 @@ impl Primitive {
         )
         .unwrap();
 
-        let builder = loader.builder();
-        builder
+        loader
+            .builder
             .copy_buffer(CopyBufferInfo::buffers(vbuf_stage, vbuf.clone()))
             .unwrap();
-        builder
+        loader
+            .builder
             .copy_buffer(CopyBufferInfo::buffers(ibuf_stage, ibuf.clone()))
             .unwrap();
 
@@ -108,9 +127,23 @@ impl Primitive {
             ilen: ibuf.len() as u32,
             vbuf,
             ibuf,
+            material_set: material.set.clone(),
         }
     }
-    pub fn render<L>(self, instances: u32, builder: &mut AutoCommandBufferBuilder<L>) {
+    pub fn render<L>(
+        self,
+        pipeline_layout: Arc<PipelineLayout>,
+        instances: u32,
+        builder: &mut AutoCommandBufferBuilder<L>,
+    ) {
+        builder
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                pipeline_layout,
+                1,
+                self.material_set,
+            )
+            .unwrap();
         builder.bind_vertex_buffers(0, self.vbuf).unwrap();
         builder.bind_index_buffer(self.ibuf).unwrap();
         unsafe { builder.draw_indexed(self.ilen, instances, 0, 0, 0) }.unwrap();
@@ -119,12 +152,16 @@ impl Primitive {
 
 #[derive(Debug)]
 pub struct Mesh {
-    pub index: usize,
-    pub name: Option<String>,
+    // pub index: usize,
+    // pub name: Option<String>,
     pub primitives: Vec<Primitive>,
 }
 impl Mesh {
-    pub fn from_loader(mesh: gltf::Mesh, import: &Import, loader: &mut Loader) -> Self {
+    pub fn from_loader(
+        mesh: gltf::Mesh,
+        buffers: &[gltf::buffer::Data],
+        loader: &mut Loader,
+    ) -> Self {
         let primitives = mesh
             .primitives()
             .filter_map(|primitive| {
@@ -133,14 +170,14 @@ impl Mesh {
                     log::warn!("triangle primitives allowed only for now. skipping.");
                     None
                 } else {
-                    Some(Primitive::new(primitive, import, loader))
+                    Some(Primitive::new(primitive, buffers, loader))
                 }
             })
             .collect();
 
         Self {
-            index: mesh.index(),
-            name: mesh.name().map(String::from),
+            // index: mesh.index(),
+            // name: mesh.name().map(String::from),
             primitives,
         }
     }

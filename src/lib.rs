@@ -10,7 +10,7 @@ use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CopyBufferToImageInfo, PrimaryAutoCommandBuffer,
-        SecondaryAutoCommandBuffer, allocator::StandardCommandBufferAllocator,
+        allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
         DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
@@ -19,6 +19,7 @@ use vulkano::{
     format::Format,
     image::{Image, ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    pipeline::PipelineBindPoint,
     render_pass::Subpass,
 };
 
@@ -41,8 +42,8 @@ pub struct Triangle {
 
     renderer: Renderer,
 
-    gltf_job: Option<JoinHandle<(GltfRenderInfo, Arc<SecondaryAutoCommandBuffer>)>>,
-    skybox_job: Option<JoinHandle<(Arc<Image>, Arc<SecondaryAutoCommandBuffer>)>>,
+    gltf_job: Option<JoinHandle<(GltfRenderInfo, Arc<PrimaryAutoCommandBuffer>)>>,
+    skybox_job: Option<JoinHandle<(Arc<Image>, Arc<PrimaryAutoCommandBuffer>)>>,
 
     allocators: Allocators,
 }
@@ -90,24 +91,35 @@ impl Triangle {
             return;
         }
         let allocators = self.allocators.clone();
-        let sets = self.camera_set.clone();
+        let material_set_layout = self.renderer.material_set_layout.clone();
         let job = std::thread::spawn(move || {
-            let mem = allocators.mem.clone();
-            let mut loader = GltfLoader::new(allocators, queue, &path).unwrap();
-            let info =
-                GltfRenderInfo::from_scene(&mem, &loader.load_default_scene().unwrap(), sets);
-            (info, loader.build())
+            let loader = GltfLoader::new(
+                allocators.clone(),
+                material_set_layout,
+                queue.queue_family_index(),
+                &path,
+            )
+            .unwrap();
+
+            let info = GltfRenderInfo::from_scene(
+                allocators.mem.clone(),
+                loader.document.default_scene().unwrap(),
+                &loader.meshes,
+            );
+            (info, loader.cb)
         });
         self.gltf_job = Some(job);
     }
     pub fn loading(&self) -> bool {
         self.gltf_job.is_some()
     }
-    pub fn update(&mut self, builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>) {
+    pub fn update(&mut self) -> Option<Arc<PrimaryAutoCommandBuffer>> {
         if self.gltf_job.as_ref().is_some_and(|job| job.is_finished()) {
             let (info, cb) = self.gltf_job.take().unwrap().join().unwrap();
-            builder.execute_commands(cb).unwrap();
             self.renderer.gltf_info = Some(info);
+            Some(cb)
+        } else {
+            None
         }
     }
 
@@ -195,9 +207,19 @@ impl Triangle {
                 ];
 
                 let renderer = self.renderer.clone();
+                let camera_set = self.camera_set.clone();
                 let callback = egui::PaintCallback {
                     rect,
                     callback: Arc::new(CallbackFn::new(move |_info, context| {
+                        context
+                            .builder
+                            .bind_descriptor_sets(
+                                PipelineBindPoint::Graphics,
+                                renderer.gltf_pipeline.layout().clone(),
+                                0,
+                                camera_set.clone(),
+                            )
+                            .unwrap();
                         renderer.clone().render(context.builder);
                     })),
                 };

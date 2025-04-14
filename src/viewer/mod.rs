@@ -1,20 +1,15 @@
-use loader::{
-    mesh::{Primitive, PrimitiveVertex},
-    node::Node,
-    scene::Scene,
-};
+use loader::mesh::{Mesh, Primitive, PrimitiveVertex};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::AutoCommandBufferBuilder,
-    descriptor_set::{DescriptorSet, layout::DescriptorSetLayout},
+    descriptor_set::layout::DescriptorSetLayout,
     device::Device,
     image::SampleCount,
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
-        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
-        PipelineShaderStageCreateInfo,
+        DynamicState, GraphicsPipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
@@ -44,62 +39,94 @@ pub struct Instance {
     #[format(R32G32B32A32_SFLOAT)]
     pub model_w: [f32; 4],
 }
+impl From<glm::Mat4> for Instance {
+    fn from(value: glm::Mat4) -> Self {
+        Self {
+            model_x: value.data.0[0],
+            model_y: value.data.0[1],
+            model_z: value.data.0[2],
+            model_w: value.data.0[3],
+        }
+    }
+}
 
 #[derive(Clone)]
 pub struct InstancedMesh {
     primitives: Vec<Primitive>,
     instances: Subbuffer<[Instance]>,
+    len: u32,
 }
 
 #[derive(Clone)]
 pub struct GltfRenderInfo {
     pub meshes: Vec<InstancedMesh>,
-    pub sets: Arc<DescriptorSet>,
 }
 impl GltfRenderInfo {
     pub fn from_scene(
-        allocator: &Arc<StandardMemoryAllocator>,
-        scene: &Scene,
-        sets: Arc<DescriptorSet>,
+        allocator: Arc<StandardMemoryAllocator>,
+        scene: gltf::Scene,
+        meshes: &[Arc<Mesh>],
     ) -> GltfRenderInfo {
-        let mut meshes = vec![];
-        Self::iter_nodes(allocator, &scene.nodes, &glm::identity(), &mut meshes);
-        Self { meshes, sets }
+        let mut builder = GltfRenderInfoBuilder { instances: vec![] };
+
+        Self::iter_nodes(scene.nodes(), &glm::identity(), &mut builder);
+
+        let meshes = builder
+            .instances
+            .into_iter()
+            .map(|(index, instance)| {
+                let mesh = meshes[index].clone();
+                let instances = Buffer::from_iter(
+                    allocator.clone(),
+                    BufferCreateInfo {
+                        usage: BufferUsage::VERTEX_BUFFER,
+                        ..Default::default()
+                    },
+                    AllocationCreateInfo {
+                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                        ..Default::default()
+                    },
+                    instance.into_iter().map(Instance::from),
+                )
+                .unwrap();
+                InstancedMesh {
+                    len: instances.len() as u32,
+                    primitives: mesh.primitives.clone(),
+                    instances,
+                }
+            })
+            .collect();
+
+        Self { meshes }
     }
-    fn iter_nodes(
-        allocator: &Arc<StandardMemoryAllocator>,
-        nodes: &[Arc<Node>],
+    fn iter_nodes<'a>(
+        nodes: impl Iterator<Item = gltf::Node<'a>>,
         transform: &glm::Mat4,
-        meshes: &mut Vec<InstancedMesh>,
+        builder: &mut GltfRenderInfoBuilder,
     ) {
         for node in nodes {
-            let transform = transform * node.transform;
-            if let Some(mesh) = &node.mesh {
-                let instance = InstancedMesh {
-                    primitives: mesh.primitives.clone(),
-                    instances: Buffer::from_iter(
-                        allocator.clone(),
-                        BufferCreateInfo {
-                            usage: BufferUsage::VERTEX_BUFFER,
-                            ..Default::default()
-                        },
-                        AllocationCreateInfo {
-                            memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                            ..Default::default()
-                        },
-                        [Instance {
-                            model_x: transform.data.0[0],
-                            model_y: transform.data.0[1],
-                            model_z: transform.data.0[2],
-                            model_w: transform.data.0[3],
-                        }],
-                    )
-                    .unwrap(),
-                };
-                meshes.push(instance);
+            let transform = transform * glm::Mat4::from(node.transform().matrix());
+            if let Some(mesh) = node.mesh() {
+                builder.add_mesh(mesh.index(), transform);
             }
-            Self::iter_nodes(allocator, &node.children, &transform, meshes);
+            Self::iter_nodes(node.children(), &transform, builder);
+        }
+    }
+}
+
+struct GltfRenderInfoBuilder {
+    instances: Vec<(usize, Vec<glm::Mat4>)>,
+}
+impl GltfRenderInfoBuilder {
+    pub fn add_mesh(&mut self, index: usize, transform: glm::Mat4) {
+        match self.instances.binary_search_by_key(&index, |(i, _)| *i) {
+            Ok(i) => {
+                self.instances[i].1.push(transform);
+            }
+            Err(i) => {
+                self.instances.insert(i, (index, vec![transform]));
+            }
         }
     }
 }
@@ -178,23 +205,17 @@ impl GltfPipeline {
         Self { pipeline }
     }
     pub fn render<L>(self, info: GltfRenderInfo, builder: &mut AutoCommandBufferBuilder<L>) {
-        builder
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                self.pipeline.layout().clone(),
-                0,
-                info.sets,
-            )
-            .unwrap();
+        let layout = self.pipeline.layout().clone();
         builder.bind_pipeline_graphics(self.pipeline).unwrap();
         for mesh in info.meshes {
-            builder
-                .bind_vertex_buffers(1, mesh.instances.clone())
-                .unwrap();
+            builder.bind_vertex_buffers(1, mesh.instances).unwrap();
             for primitive in mesh.primitives {
-                primitive.render(1, builder);
+                primitive.render(layout.clone(), mesh.len, builder);
             }
         }
+    }
+    pub fn layout(&self) -> &Arc<PipelineLayout> {
+        self.pipeline.layout()
     }
 }
 

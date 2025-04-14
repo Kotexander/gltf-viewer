@@ -931,6 +931,7 @@ name = "gltf_viewer"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "bytemuck",
  "colog",
  "egui",
  "egui_file",
@@ -939,7 +940,6 @@ dependencies = [
  "image",
  "log",
  "nalgebra-glm",
- "tobj",
  "vulkano",
  "vulkano-shaders",
  "vulkano-util",
@@ -2645,15 +2645,6 @@ checksum = "9117f5d4db391c1cf6927e7bea3db74b9a1c1add8f7eda9ffd5364f40f57b82f"
 dependencies = [
  "displaydoc",
  "zerovec",
-]
-
-[[package]]
-name = "tobj"
-version = "4.0.3"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04aca6092e5978e708ee784e8ab9b5cf3cdb598b28f99a2f257446e7081a7025"
-dependencies = [
- "ahash",
 ]
 
 [[package]]

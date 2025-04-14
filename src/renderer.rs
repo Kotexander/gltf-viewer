@@ -23,6 +23,7 @@ use vulkano::{
 pub struct Renderer {
     pub camera_set_layout: Arc<DescriptorSetLayout>,
     pub cubemap_set_layout: Arc<DescriptorSetLayout>,
+    pub material_set_layout: Arc<DescriptorSetLayout>,
 
     pub skybox_pipeline: CubemapPipeline,
 
@@ -51,6 +52,22 @@ impl Renderer {
             },
         )
         .unwrap();
+        let material_set_layout = DescriptorSetLayout::new(
+            device.clone(),
+            DescriptorSetLayoutCreateInfo {
+                bindings: BTreeMap::from([(
+                    0,
+                    DescriptorSetLayoutBinding {
+                        stages: ShaderStages::FRAGMENT,
+                        ..DescriptorSetLayoutBinding::descriptor_type(
+                            DescriptorType::CombinedImageSampler,
+                        )
+                    },
+                )]),
+                ..Default::default()
+            },
+        )
+        .unwrap();
         let cubemap_set_layout = DescriptorSetLayout::new(
             device.clone(),
             DescriptorSetLayoutCreateInfo {
@@ -70,7 +87,7 @@ impl Renderer {
 
         let gltf_pipeline = GltfPipeline::new(
             device.clone(),
-            vec![camera_set_layout.clone()],
+            vec![camera_set_layout.clone(), material_set_layout.clone()],
             subpass.clone(),
         );
         let skybox_pipeline = CubemapPipeline::new(
@@ -82,6 +99,7 @@ impl Renderer {
         Self {
             camera_set_layout,
             cubemap_set_layout,
+            material_set_layout,
             skybox_pipeline,
             equi_set: None,
             cube_set: None,
@@ -98,10 +116,8 @@ impl Renderer {
             if let Some(cube_set) = self.cube_set {
                 self.skybox_pipeline.render_cube(builder, cube_set);
             }
-        } else {
-            if let Some(equi_set) = self.equi_set {
-                self.skybox_pipeline.render_equi(builder, equi_set);
-            }
+        } else if let Some(equi_set) = self.equi_set {
+            self.skybox_pipeline.render_equi(builder, equi_set);
         }
     }
 }
