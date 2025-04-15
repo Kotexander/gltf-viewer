@@ -343,10 +343,10 @@ vec2 sampleSphericalMap(vec3 dir) {
 void main() {
     vec3 dir = normalize(v_pos);
     vec2 uv = sampleSphericalMap(dir);
-    // vec4 color = texture(texSampler, uv);
+    vec4 color = texture(texSampler, uv);
     // f_color = color / (color + 1);
 
-    f_color = texture(texSampler, uv);
+    f_color = vec4(pow(color.rgb, vec3(1.0/2.2)), color.a);
 }
         "#
     }

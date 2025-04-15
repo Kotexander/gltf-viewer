@@ -123,7 +123,7 @@ void main() {
 
     vec3 brdf = kd * lambert + specular;
     vec3 color = brdf * light_colour * n_dot_l + em;
-    vec3 ambient = vec3(0.5) * albedo * ao;
+    vec3 ambient = vec3(1.0) * albedo * ao;
     color += ambient;
     // vec3 tone_map = color / (color + vec3(1.0));
     // f_color = vec4(tone_map, 1.0);

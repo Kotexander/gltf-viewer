@@ -73,7 +73,8 @@ struct Window {
     gui: Gui,
     triangle: Triangle,
     frame_info: FrameInfo,
-    file_picker: FileDialog,
+    gltf_picker: FileDialog,
+    skybox_picker: FileDialog,
 }
 
 struct App {
@@ -177,8 +178,9 @@ impl ApplicationHandler for App {
         );
 
         let triangle = Triangle::new(self.allocators.clone(), frame_info.subpass().clone());
-        let mut file_picker =
+        let mut gltf_picker =
             FileDialog::open_file(Some(std::env::current_dir().unwrap_or(".".into())))
+                .id("Gltf")
                 .show_new_folder(false)
                 .show_rename(false)
                 .multi_select(false)
@@ -186,12 +188,23 @@ impl ApplicationHandler for App {
                     let patterns = [OsStr::new("glb"), OsStr::new("gltf")];
                     move |path| path.extension().is_some_and(|ext| patterns.contains(&ext))
                 }));
-        file_picker.open();
+        gltf_picker.open();
+        let skybox_picker =
+            FileDialog::open_file(Some(std::env::current_dir().unwrap_or(".".into())))
+                .id("Skybox")
+                .show_new_folder(false)
+                .show_rename(false)
+                .multi_select(false)
+                .show_files_filter(Box::new({
+                    let patterns = [OsStr::new("hdr"), OsStr::new("exr")];
+                    move |path| path.extension().is_some_and(|ext| patterns.contains(&ext))
+                }));
         self.window = Some(Window {
             gui,
             triangle,
             frame_info,
-            file_picker,
+            gltf_picker,
+            skybox_picker,
         });
     }
 
@@ -226,14 +239,28 @@ impl ApplicationHandler for App {
                         ui.horizontal(|ui| {
                             if ui
                                 .add_enabled(
-                                    !window.triangle.loading(),
+                                    !window.triangle.loading_gltf(),
                                     egui::Button::new("Open glTF"),
                                 )
                                 .clicked()
                             {
-                                window.file_picker.open();
+                                window.gltf_picker.open();
                             }
-                            if window.triangle.loading() {
+                            if window.triangle.loading_gltf() {
+                                ui.spinner();
+                            }
+                        });
+                        ui.horizontal(|ui| {
+                            if ui
+                                .add_enabled(
+                                    !window.triangle.loading_skybox(),
+                                    egui::Button::new("Open Skybox"),
+                                )
+                                .clicked()
+                            {
+                                window.skybox_picker.open();
+                            }
+                            if window.triangle.loading_skybox() {
                                 ui.spinner();
                             }
                         });
@@ -242,9 +269,18 @@ impl ApplicationHandler for App {
 
                         window.triangle.side(ui);
                     });
-                    if window.file_picker.show(&ctx).selected() {
+                    if window.gltf_picker.show(&ctx).selected() {
                         window.triangle.load_gltf(
-                            window.file_picker.path().unwrap().into(),
+                            window.gltf_picker.path().unwrap().into(),
+                            self.context
+                                .transfer_queue()
+                                .unwrap_or(self.context.graphics_queue())
+                                .clone(),
+                        );
+                    }
+                    if window.skybox_picker.show(&ctx).selected() {
+                        window.triangle.load_skybox(
+                            window.skybox_picker.path().unwrap().into(),
                             self.context
                                 .transfer_queue()
                                 .unwrap_or(self.context.graphics_queue())
@@ -258,7 +294,19 @@ impl ApplicationHandler for App {
                     window.frame_info.recreate(views.to_vec());
                 }) {
                     Ok(mut before_future) => {
-                        if let Some(cb) = window.triangle.update() {
+                        if let Some(cb) = window.triangle.update_gltf() {
+                            before_future = before_future
+                                .then_execute(
+                                    self.context
+                                        .transfer_queue()
+                                        .unwrap_or(self.context.graphics_queue())
+                                        .clone(),
+                                    cb,
+                                )
+                                .unwrap()
+                                .boxed();
+                        }
+                        if let Some(cb) = window.triangle.update_skybox() {
                             before_future = before_future
                                 .then_execute(
                                     self.context

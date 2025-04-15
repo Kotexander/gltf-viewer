@@ -3,21 +3,29 @@ use egui_winit_vulkano::CallbackFn;
 use image::EncodableLayout;
 use nalgebra_glm as glm;
 use renderer::Renderer;
-use std::{path::PathBuf, sync::Arc, thread::JoinHandle};
+use std::{
+    path::{Path, PathBuf},
+    sync::Arc,
+    thread::JoinHandle,
+};
 use viewer::{GltfRenderInfo, loader::GltfLoader};
 use vulkano::{
     DeviceSize,
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
-        AutoCommandBufferBuilder, CopyBufferToImageInfo, PrimaryAutoCommandBuffer,
-        allocator::StandardCommandBufferAllocator,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
+        PrimaryAutoCommandBuffer, allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
         DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
     },
-    device::Queue,
+    device::{DeviceOwned, Queue},
     format::Format,
-    image::{Image, ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage},
+    image::{
+        Image, ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage,
+        sampler::{Sampler, SamplerCreateInfo},
+        view::ImageView,
+    },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::PipelineBindPoint,
     render_pass::Subpass,
@@ -114,13 +122,65 @@ impl Triangle {
         });
         self.gltf_job = Some(job);
     }
-    pub fn loading(&self) -> bool {
+    pub fn loading_gltf(&self) -> bool {
         self.gltf_job.is_some()
     }
-    pub fn update(&mut self) -> Option<Arc<PrimaryAutoCommandBuffer>> {
+
+    pub fn load_skybox(&mut self, path: PathBuf, queue: Arc<Queue>) {
+        if self.skybox_job.is_some() {
+            return;
+        }
+        let allocators = self.allocators.clone();
+        let job = std::thread::spawn(move || {
+            let mut builder = AutoCommandBufferBuilder::primary(
+                allocators.cmd,
+                queue.queue_family_index(),
+                CommandBufferUsage::OneTimeSubmit,
+            )
+            .unwrap();
+            let skybox = load_skybox(allocators.mem, path, &mut builder);
+            let cb = builder.build().unwrap();
+            (skybox, cb)
+        });
+        self.skybox_job = Some(job);
+    }
+    pub fn loading_skybox(&self) -> bool {
+        self.skybox_job.is_some()
+    }
+
+    pub fn update_gltf(&mut self) -> Option<Arc<PrimaryAutoCommandBuffer>> {
         if self.gltf_job.as_ref().is_some_and(|job| job.is_finished()) {
             let (info, cb) = self.gltf_job.take().unwrap().join().unwrap();
             self.renderer.gltf_info = Some(info);
+            Some(cb)
+        } else {
+            None
+        }
+    }
+    pub fn update_skybox(&mut self) -> Option<Arc<PrimaryAutoCommandBuffer>> {
+        if self
+            .skybox_job
+            .as_ref()
+            .is_some_and(|job| job.is_finished())
+        {
+            let (skybox, cb) = self.skybox_job.take().unwrap().join().unwrap();
+            let view = ImageView::new_default(skybox).unwrap();
+            let set = DescriptorSet::new(
+                self.allocators.set.clone(),
+                self.renderer.cubemap_set_layout.clone(),
+                [WriteDescriptorSet::image_view_sampler(
+                    0,
+                    view,
+                    Sampler::new(
+                        self.allocators.mem.device().clone(),
+                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+                    )
+                    .unwrap(),
+                )],
+                [],
+            )
+            .unwrap();
+            self.renderer.equi_set = Some(set);
             Some(cb)
         } else {
             None
@@ -306,10 +366,10 @@ fn load_cubemap<L>(
 }
 
 fn load_skybox<L>(
-    mem_alloc: Arc<StandardMemoryAllocator>,
+    allocator: Arc<StandardMemoryAllocator>,
+    path: impl AsRef<Path>,
     builder: &mut AutoCommandBufferBuilder<L>,
 ) -> Arc<Image> {
-    let path = "assets/skybox8k.hdr";
     // let mut reader = BufReader::new(std::fs::File::open(path).unwrap());
     // let mut image_reader = image::ImageReader::new(&mut reader)
     //     .with_guessed_format()
@@ -320,7 +380,7 @@ fn load_skybox<L>(
     let image = image::open(path).unwrap().to_rgba32f();
 
     let stage_buffer = Buffer::new_slice(
-        mem_alloc.clone(),
+        allocator.clone(),
         BufferCreateInfo {
             usage: BufferUsage::TRANSFER_SRC,
             ..Default::default()
@@ -339,7 +399,7 @@ fn load_skybox<L>(
         .copy_from_slice(image.as_bytes());
 
     let image = Image::new(
-        mem_alloc,
+        allocator,
         ImageCreateInfo {
             image_type: ImageType::Dim2d,
             format: Format::R32G32B32A32_SFLOAT,
