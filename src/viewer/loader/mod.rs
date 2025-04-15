@@ -1,11 +1,15 @@
 use crate::Allocators;
 use image::{convert_image, load_image};
-use material::Material;
+use material::{Factors, Material};
 use mesh::Mesh;
 use std::{path::Path, sync::Arc};
 use texture::Texture;
 use vulkano::{
-    command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer},
+    buffer::{Buffer, BufferCreateInfo, BufferUsage},
+    command_buffer::{
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
+        PrimaryAutoCommandBuffer,
+    },
     descriptor_set::layout::DescriptorSetLayout,
     device::DeviceOwned,
     format::Format,
@@ -14,7 +18,7 @@ use vulkano::{
         sampler::{Sampler, SamplerCreateInfo},
         view::ImageView,
     },
-    memory::allocator::AllocationCreateInfo,
+    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
 };
 
 mod image;
@@ -112,6 +116,7 @@ impl Loader {
                 set: Material::create_set(
                     self.allocators.set.clone(),
                     self.material_set_layout.clone(),
+                    Material::create_factor_buffer(self.allocators.mem.clone(), Factors::default()),
                     self.get_default_texture(),
                     self.get_default_texture(),
                     self.get_default_texture(),
@@ -173,10 +178,24 @@ impl Loader {
 
     fn get_default_texture(&mut self) -> Texture {
         if self.default_texture.is_none() {
+            let stage_image = Buffer::from_data(
+                self.allocators.mem.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::TRANSFER_SRC,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                [255u8; 4],
+            )
+            .unwrap();
             let image = Image::new(
                 self.allocators.mem.clone(),
                 ImageCreateInfo {
-                    usage: ImageUsage::SAMPLED,
+                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
                     extent: [1; 3],
                     format: Format::R8G8B8A8_SRGB,
                     ..Default::default()
@@ -184,6 +203,12 @@ impl Loader {
                 AllocationCreateInfo::default(),
             )
             .unwrap();
+            self.builder
+                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+                    stage_image,
+                    image.clone(),
+                ))
+                .unwrap();
             let view = ImageView::new_default(image).unwrap();
             let sampler = Sampler::new(
                 self.allocators.mem.device().clone(),

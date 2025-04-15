@@ -173,10 +173,7 @@ impl ApplicationHandler for App {
             renderer.graphics_queue(),
             frame_info.subpass().clone(),
             renderer.swapchain_format(),
-            GuiConfig {
-                allow_srgb_render_target: true,
-                ..Default::default()
-            },
+            GuiConfig::default(),
         );
 
         let triangle = Triangle::new(self.allocators.clone(), frame_info.subpass().clone());

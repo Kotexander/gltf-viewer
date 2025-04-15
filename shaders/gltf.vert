@@ -13,7 +13,7 @@ layout(location = 8) in vec4 model_y;
 layout(location = 9) in vec4 model_z;
 layout(location = 10) in vec4 model_w;
 
-layout(set = 0, binding = 0, std140) uniform Camera {
+layout(set = 0, binding = 0) uniform Camera {
     mat4 view;
     mat4 proj;
     mat4 view_inv;

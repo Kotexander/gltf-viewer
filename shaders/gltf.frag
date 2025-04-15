@@ -10,17 +10,23 @@ layout(location = 6) in vec2 nm_tex;
 
 layout(location = 0) out vec4 f_color;
 
-layout(set = 0, binding = 0, std140) uniform Camera {
+layout(set = 0, binding = 0) uniform Camera {
     mat4 view;
     mat4 proj;
     mat4 view_inv;
 } cam;
 
-layout(set = 1, binding = 0) uniform sampler2D bc_sampler;
-layout(set = 1, binding = 1) uniform sampler2D rm_sampler;
-layout(set = 1, binding = 2) uniform sampler2D ao_sampler;
-layout(set = 1, binding = 3) uniform sampler2D em_sampler;
-layout(set = 1, binding = 4) uniform sampler2D nm_sampler;
+layout(set = 1, binding = 0) uniform Factors {
+    vec4 bc;
+    vec3 em;
+    float ao;
+    vec2 rm;
+} f;
+layout(set = 1, binding = 1) uniform sampler2D bc_sampler;
+layout(set = 1, binding = 2) uniform sampler2D rm_sampler;
+layout(set = 1, binding = 3) uniform sampler2D ao_sampler;
+layout(set = 1, binding = 4) uniform sampler2D em_sampler;
+layout(set = 1, binding = 5) uniform sampler2D nm_sampler;
 
 const float PI = 3.14159265358979323846264338327950288;
 
@@ -55,6 +61,25 @@ vec3 fresnel_shlick(float cos_theta, vec3 f0) {
     return f0 + (1.0 - f0) * pow(1.0 - cos_theta, 5.0);
 }
 
+vec3 pbr_neutral_tone_mapping(vec3 color) {
+    const float startCompression = 0.8 - 0.04;
+    const float desaturation = 0.15;
+
+    float x = min(color.r, min(color.g, color.b));
+    float offset = x < 0.08 ? x - 6.25 * x * x : 0.04;
+    color -= offset;
+
+    float peak = max(color.r, max(color.g, color.b));
+    if (peak < startCompression) return color;
+
+    const float d = 1. - startCompression;
+    float newPeak = 1. - d * d / (peak + d - startCompression);
+    color *= newPeak / peak;
+
+    float g = 1. - 1. / (desaturation * (peak - newPeak) + 1.);
+    return mix(color, newPeak * vec3(1, 1, 1), g);
+}
+
 void main() {
     // f_color = vec4((normalize(normal) + 1.0) / 2.0, 1.0);
     // f_color = vec4(normalize(normal), 1.0);
@@ -65,16 +90,16 @@ void main() {
     // f_color = texture(em_sampler, em_tex);
     // f_color = texture(nm_sampler, nm_tex);
 
-    float ao = texture(ao_sampler, ao_tex).r;
-    vec3 albedo = texture(bc_sampler, bc_tex).rgb;
-    vec2 rm = texture(rm_sampler, rm_tex).gb;
-    vec3 em = texture(em_sampler, em_tex).rgb;
+    float ao = texture(ao_sampler, ao_tex).r * f.ao;
+    vec3 albedo = texture(bc_sampler, bc_tex).rgb * f.bc.rgb;
+    vec2 rm = texture(rm_sampler, rm_tex).gb * f.rm;
+    vec3 em = texture(em_sampler, em_tex).rgb * f.em;
 
     vec3 N = normalize(normal);
     vec3 V = normalize(cam.view_inv[3].xyz - position);
     vec3 f0 = mix(vec3(0.04), albedo, rm.y);
 
-    vec3 light_colour = vec3(10.0);
+    vec3 light_colour = vec3(5.0);
     vec3 L = normalize(vec3(1.0, 1.0, 1.0));
     vec3 H = normalize(L + V);
 
@@ -100,6 +125,7 @@ void main() {
     vec3 color = brdf * light_colour * n_dot_l + em;
     vec3 ambient = vec3(0.5) * albedo * ao;
     color += ambient;
-    vec3 tone_map = color / (color + vec3(1.0));
-    f_color = vec4(tone_map, 1.0);
+    // vec3 tone_map = color / (color + vec3(1.0));
+    // f_color = vec4(tone_map, 1.0);
+    f_color = vec4(pbr_neutral_tone_mapping(color), 1.0);
 }
