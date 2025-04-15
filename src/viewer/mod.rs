@@ -219,7 +219,7 @@ impl GltfPipeline {
     }
 }
 
-pub mod vs {
+mod vs {
     vulkano_shaders::shader! {
         ty: "vertex",
         path: "shaders/gltf.vert"

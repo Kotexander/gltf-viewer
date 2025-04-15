@@ -37,7 +37,7 @@ pub struct Allocators {
 
 pub struct Triangle {
     camera: OrbitCamera,
-    camera_buffer: Subbuffer<[glm::Mat4; 2]>,
+    camera_buffer: Subbuffer<[glm::Mat4; 3]>,
     camera_set: Arc<DescriptorSet>,
 
     renderer: Renderer,
@@ -61,7 +61,11 @@ impl Triangle {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            [camera.look_at(), camera.perspective(1.0)],
+            [
+                camera.look_at(),
+                camera.perspective(1.0),
+                camera.look_at().try_inverse().unwrap(),
+            ],
         )
         .unwrap();
 
@@ -204,6 +208,7 @@ impl Triangle {
                 *buffer = [
                     self.camera.look_at(),
                     self.camera.perspective(rect.aspect_ratio()),
+                    self.camera.look_at().try_inverse().unwrap(),
                 ];
 
                 let renderer = self.renderer.clone();

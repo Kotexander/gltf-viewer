@@ -154,7 +154,7 @@ impl ApplicationHandler for App {
             &self.context,
             &Default::default(),
             |swapchain_info| {
-                swapchain_info.image_format = Format::R8G8B8A8_SRGB;
+                swapchain_info.image_format = Format::R8G8B8A8_UNORM;
                 swapchain_info.image_usage |= ImageUsage::TRANSFER_DST;
                 // swapchain_info.min_image_count += 1;
                 // swapchain_info.present_mode = vulkano::swapchain::PresentMode::Mailbox;

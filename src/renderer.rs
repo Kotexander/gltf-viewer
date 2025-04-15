@@ -54,7 +54,7 @@ impl Renderer {
                 bindings: BTreeMap::from([(
                     0,
                     DescriptorSetLayoutBinding {
-                        stages: ShaderStages::VERTEX,
+                        stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                         ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::UniformBuffer)
                     },
                 )]),
