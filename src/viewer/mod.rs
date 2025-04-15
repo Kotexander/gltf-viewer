@@ -65,7 +65,7 @@ impl GltfRenderInfo {
     pub fn from_scene(
         allocator: Arc<StandardMemoryAllocator>,
         scene: gltf::Scene,
-        meshes: &[Arc<Mesh>],
+        mut meshes: Vec<Option<Mesh>>,
     ) -> GltfRenderInfo {
         let mut builder = GltfRenderInfoBuilder { instances: vec![] };
 
@@ -75,7 +75,7 @@ impl GltfRenderInfo {
             .instances
             .into_iter()
             .map(|(index, instance)| {
-                let mesh = meshes[index].clone();
+                let mesh = meshes[index].take().unwrap();
                 let instances = Buffer::from_iter(
                     allocator.clone(),
                     BufferCreateInfo {

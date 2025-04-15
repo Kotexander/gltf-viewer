@@ -8,74 +8,57 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
 };
 
-pub fn load_images(
-    document: &gltf::Document,
-    images: Vec<gltf::image::Data>,
-    allocator: &Arc<StandardMemoryAllocator>,
+pub fn load_image(
+    allocator: Arc<StandardMemoryAllocator>,
     builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-) -> Vec<Arc<ImageView>> {
-    let mut is_srgb = vec![false; document.images().len()];
-    for material in document.materials() {
-        let pbr = material.pbr_metallic_roughness();
-        if let Some(base_color) = pbr.base_color_texture() {
-            let i = base_color.texture().source().index();
-            is_srgb[i] = true;
-        }
-    }
+    image: ::image::RgbaImage,
+    is_srgb: bool,
+) -> Arc<ImageView> {
+    let stage_buffer = Buffer::from_iter(
+        allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        image.as_bytes().iter().copied(),
+    )
+    .unwrap();
 
-    images
-        .into_iter()
-        .zip(is_srgb)
-        .map(|(data, is_srgb)| {
-            let image = convert_image(data);
+    let format = if is_srgb {
+        Format::R8G8B8A8_SRGB
+    } else {
+        Format::R8G8B8A8_UNORM
+    };
 
-            let stage_buffer = Buffer::from_iter(
-                allocator.clone(),
-                BufferCreateInfo {
-                    usage: BufferUsage::TRANSFER_SRC,
-                    ..Default::default()
-                },
-                AllocationCreateInfo {
-                    memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                    ..Default::default()
-                },
-                image.as_bytes().iter().copied(),
-            )
-            .unwrap();
+    let image = vulkano::image::Image::new(
+        allocator.clone(),
+        ImageCreateInfo {
+            usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+            image_type: ImageType::Dim2d,
+            format,
+            extent: [image.width(), image.height(), 1],
+            ..Default::default()
+        },
+        AllocationCreateInfo::default(),
+    )
+    .unwrap();
 
-            let format = if is_srgb {
-                Format::R8G8B8A8_SRGB
-            } else {
-                Format::R8G8B8A8_UNORM
-            };
+    builder
+        .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
+            stage_buffer,
+            image.clone(),
+        ))
+        .unwrap();
 
-            let image = vulkano::image::Image::new(
-                allocator.clone(),
-                ImageCreateInfo {
-                    usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-                    image_type: ImageType::Dim2d,
-                    format,
-                    extent: [image.width(), image.height(), 1],
-                    ..Default::default()
-                },
-                AllocationCreateInfo::default(),
-            )
-            .unwrap();
-
-            builder
-                .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-                    stage_buffer,
-                    image.clone(),
-                ))
-                .unwrap();
-
-            ImageView::new_default(image).unwrap()
-        })
-        .collect()
+    ImageView::new_default(image).unwrap()
 }
 
-fn convert_image(data: gltf::image::Data) -> image::ImageBuffer<image::Rgba<u8>, Vec<u8>> {
+pub fn convert_image(data: gltf::image::Data) -> image::ImageBuffer<image::Rgba<u8>, Vec<u8>> {
     match data.format {
         gltf::image::Format::R8 => image::DynamicImage::ImageLuma8(
             image::ImageBuffer::from_vec(data.width, data.height, data.pixels).unwrap(),

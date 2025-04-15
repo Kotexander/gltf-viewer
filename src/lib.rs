@@ -104,7 +104,7 @@ impl Triangle {
             let info = GltfRenderInfo::from_scene(
                 allocators.mem.clone(),
                 loader.document.default_scene().unwrap(),
-                &loader.meshes,
+                loader.meshes,
             );
             (info, loader.cb)
         });

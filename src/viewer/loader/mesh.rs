@@ -23,6 +23,10 @@ pub struct PrimitiveVertex {
     pub rm_tex: glm::Vec2,
     #[format(R32G32_SFLOAT)]
     pub ao_tex: glm::Vec2,
+    #[format(R32G32_SFLOAT)]
+    pub em_tex: glm::Vec2,
+    #[format(R32G32_SFLOAT)]
+    pub nm_tex: glm::Vec2,
 }
 
 #[derive(Clone, Debug)]
@@ -33,9 +37,10 @@ pub struct Primitive {
     ilen: u32,
 }
 impl Primitive {
-    pub fn new(
+    pub fn from_loader(
         primitive: gltf::Primitive,
         buffers: &[gltf::buffer::Data],
+        images: &mut [Option<::image::RgbaImage>],
         loader: &mut Loader,
     ) -> Self {
         let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice()));
@@ -50,18 +55,38 @@ impl Primitive {
                 bc_tex: glm::Vec2::zeros(),
                 rm_tex: glm::Vec2::zeros(),
                 ao_tex: glm::Vec2::zeros(),
+                em_tex: glm::Vec2::zeros(),
+                nm_tex: glm::Vec2::zeros(),
             })
             .collect();
         let indices = reader.read_indices().unwrap().into_u32();
 
-        let material = &loader.material[primitive.material().index().unwrap()];
-        for (i, tex) in reader
-            .read_tex_coords(material.bc_tex.unwrap())
-            .unwrap()
-            .into_f32()
-            .enumerate()
-        {
-            vertices[i].bc_tex = tex.into();
+        let material = loader.get_material(primitive.material(), images);
+
+        if let Some(set) = material.tex_sets.bc {
+            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
+                vertices[i].bc_tex = tex.into();
+            }
+        }
+        if let Some(set) = material.tex_sets.rm {
+            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
+                vertices[i].rm_tex = tex.into();
+            }
+        }
+        if let Some(set) = material.tex_sets.ao {
+            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
+                vertices[i].ao_tex = tex.into();
+            }
+        }
+        if let Some(set) = material.tex_sets.em {
+            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
+                vertices[i].em_tex = tex.into();
+            }
+        }
+        if let Some(set) = material.tex_sets.nm {
+            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
+                vertices[i].nm_tex = tex.into();
+            }
         }
 
         let vbuf_stage = Buffer::from_iter(
@@ -160,6 +185,7 @@ impl Mesh {
     pub fn from_loader(
         mesh: gltf::Mesh,
         buffers: &[gltf::buffer::Data],
+        images: &mut [Option<::image::RgbaImage>],
         loader: &mut Loader,
     ) -> Self {
         let primitives = mesh
@@ -170,7 +196,7 @@ impl Mesh {
                     log::warn!("triangle primitives allowed only for now. skipping.");
                     None
                 } else {
-                    Some(Primitive::new(primitive, buffers, loader))
+                    Some(Primitive::from_loader(primitive, buffers, images, loader))
                 }
             })
             .collect();

@@ -1,31 +1,102 @@
-use super::Loader;
+use super::{Loader, texture::Texture};
 use std::sync::Arc;
-use vulkano::descriptor_set::{DescriptorSet, WriteDescriptorSet};
+use vulkano::descriptor_set::{
+    DescriptorSet, allocator::StandardDescriptorSetAllocator, layout::DescriptorSetLayout,
+};
 
+#[derive(Default, Clone)]
+pub struct TextureSets {
+    pub bc: Option<u32>,
+    pub rm: Option<u32>,
+    pub ao: Option<u32>,
+    pub em: Option<u32>,
+    pub nm: Option<u32>,
+}
+
+#[derive(Clone)]
 pub struct Material {
     pub set: Arc<DescriptorSet>,
-    pub bc_tex: Option<u32>,
+    pub tex_sets: TextureSets,
 }
 impl Material {
-    pub fn from_loader(material: gltf::Material, loader: &mut Loader) -> Self {
+    pub fn from_loader(
+        material: gltf::Material,
+        images: &mut [Option<::image::RgbaImage>],
+        loader: &mut Loader,
+    ) -> Self {
         let pbr = material.pbr_metallic_roughness();
-        let bc = pbr
-            .base_color_texture()
-            .map(|base_color| base_color.tex_coord());
-        // // bc.texture().i
-        let base_texture = &loader.textures[pbr.base_color_texture().unwrap().texture().index()];
-        let set = DescriptorSet::new(
+
+        let mut tex_sets = TextureSets::default();
+
+        let base_colour = if let Some(base_color) = pbr.base_color_texture() {
+            tex_sets.bc = Some(base_color.tex_coord());
+            loader.get_texture(base_color.texture(), true, images)
+        } else {
+            loader.get_default_texture()
+        };
+
+        let roughness_matallic = if let Some(rougness_metallic) = pbr.metallic_roughness_texture() {
+            tex_sets.rm = Some(rougness_metallic.tex_coord());
+            loader.get_texture(rougness_metallic.texture(), false, images)
+        } else {
+            loader.get_default_texture()
+        };
+
+        let occlusion = if let Some(occlusion) = material.occlusion_texture() {
+            tex_sets.ao = Some(occlusion.tex_coord());
+            loader.get_texture(occlusion.texture(), false, images)
+        } else {
+            loader.get_default_texture()
+        };
+
+        let emissive = if let Some(emissive) = material.emissive_texture() {
+            tex_sets.em = Some(emissive.tex_coord());
+            loader.get_texture(emissive.texture(), true, images)
+        } else {
+            loader.get_default_texture()
+        };
+
+        let normal = if let Some(normal) = material.normal_texture() {
+            tex_sets.nm = Some(normal.tex_coord());
+            loader.get_texture(normal.texture(), true, images)
+        } else {
+            loader.get_default_texture()
+        };
+
+        let set = Self::create_set(
             loader.allocators.set.clone(),
             loader.material_set_layout.clone(),
-            [WriteDescriptorSet::image_view_sampler(
-                0,
-                base_texture.view.clone(),
-                base_texture.sampler.clone(),
-            )],
+            base_colour,
+            roughness_matallic,
+            occlusion,
+            emissive,
+            normal,
+        );
+
+        Self { set, tex_sets }
+    }
+
+    pub fn create_set(
+        allocator: Arc<StandardDescriptorSetAllocator>,
+        layout: Arc<DescriptorSetLayout>,
+        base_colour: Texture,
+        roughness_matallic: Texture,
+        occlusion: Texture,
+        emissive: Texture,
+        normal: Texture,
+    ) -> Arc<DescriptorSet> {
+        DescriptorSet::new(
+            allocator,
+            layout,
+            [
+                base_colour.bind(0),
+                roughness_matallic.bind(1),
+                occlusion.bind(2),
+                emissive.bind(3),
+                normal.bind(4),
+            ],
             [],
         )
-        .unwrap();
-
-        Self { bc_tex: bc, set }
+        .unwrap()
     }
 }

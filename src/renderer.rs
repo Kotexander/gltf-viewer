@@ -19,6 +19,16 @@ use vulkano::{
     shader::ShaderStages,
 };
 
+fn texture_layout(set: u32) -> (u32, DescriptorSetLayoutBinding) {
+    (
+        set,
+        DescriptorSetLayoutBinding {
+            stages: ShaderStages::FRAGMENT,
+            ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::CombinedImageSampler)
+        },
+    )
+}
+
 #[derive(Clone)]
 pub struct Renderer {
     pub camera_set_layout: Arc<DescriptorSetLayout>,
@@ -55,15 +65,13 @@ impl Renderer {
         let material_set_layout = DescriptorSetLayout::new(
             device.clone(),
             DescriptorSetLayoutCreateInfo {
-                bindings: BTreeMap::from([(
-                    0,
-                    DescriptorSetLayoutBinding {
-                        stages: ShaderStages::FRAGMENT,
-                        ..DescriptorSetLayoutBinding::descriptor_type(
-                            DescriptorType::CombinedImageSampler,
-                        )
-                    },
-                )]),
+                bindings: BTreeMap::from([
+                    texture_layout(0),
+                    texture_layout(1),
+                    texture_layout(2),
+                    texture_layout(3),
+                    texture_layout(4),
+                ]),
                 ..Default::default()
             },
         )
@@ -71,15 +79,7 @@ impl Renderer {
         let cubemap_set_layout = DescriptorSetLayout::new(
             device.clone(),
             DescriptorSetLayoutCreateInfo {
-                bindings: BTreeMap::from([(
-                    0,
-                    DescriptorSetLayoutBinding {
-                        stages: ShaderStages::FRAGMENT,
-                        ..DescriptorSetLayoutBinding::descriptor_type(
-                            DescriptorType::CombinedImageSampler,
-                        )
-                    },
-                )]),
+                bindings: BTreeMap::from([texture_layout(0)]),
                 ..Default::default()
             },
         )

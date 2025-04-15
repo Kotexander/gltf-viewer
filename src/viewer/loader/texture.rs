@@ -1,6 +1,7 @@
 use super::Loader;
 use std::sync::Arc;
 use vulkano::{
+    descriptor_set::WriteDescriptorSet,
     device::DeviceOwned,
     image::{
         sampler::{Filter, Sampler, SamplerAddressMode, SamplerCreateInfo, SamplerMipmapMode},
@@ -8,13 +9,18 @@ use vulkano::{
     },
 };
 
+#[derive(Clone)]
 pub struct Texture {
     pub view: Arc<ImageView>,
     pub sampler: Arc<Sampler>,
-    // tex_coord: u32,
 }
 impl Texture {
-    pub fn from_loader(texture: gltf::Texture, loader: &mut Loader) -> Texture {
+    pub fn from_loader(
+        texture: gltf::Texture,
+        is_srgb: bool,
+        images: &mut [Option<::image::RgbaImage>],
+        loader: &mut Loader,
+    ) -> Texture {
         let sampler = texture.sampler();
         let address_mode = [
             convert_wrap(sampler.wrap_s()),
@@ -41,10 +47,12 @@ impl Texture {
         )
         .unwrap();
 
-        Self {
-            view: loader.images[texture.source().index()].clone(),
-            sampler,
-        }
+        let view = loader.get_image(texture.source(), is_srgb, images).clone();
+
+        Self { view, sampler }
+    }
+    pub fn bind(self, binding: u32) -> WriteDescriptorSet {
+        WriteDescriptorSet::image_view_sampler(binding, self.view, self.sampler)
     }
 }
 

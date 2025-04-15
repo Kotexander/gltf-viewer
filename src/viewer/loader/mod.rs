@@ -1,5 +1,5 @@
 use crate::Allocators;
-use image::load_images;
+use image::{convert_image, load_image};
 use material::Material;
 use mesh::Mesh;
 use std::{path::Path, sync::Arc};
@@ -7,8 +7,13 @@ use texture::Texture;
 use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryAutoCommandBuffer},
     descriptor_set::layout::DescriptorSetLayout,
+    device::DeviceOwned,
     format::Format,
-    image::{Image, ImageCreateInfo, ImageUsage, view::ImageView},
+    image::{
+        Image, ImageCreateInfo, ImageUsage,
+        sampler::{Sampler, SamplerCreateInfo},
+        view::ImageView,
+    },
     memory::allocator::AllocationCreateInfo,
 };
 
@@ -22,18 +27,19 @@ pub struct Loader {
     material_set_layout: Arc<DescriptorSetLayout>,
     builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 
-    images: Vec<Arc<ImageView>>,
-    textures: Vec<Arc<Texture>>,
-    material: Vec<Arc<Material>>,
-    meshes: Vec<Arc<Mesh>>,
+    images: Vec<Option<(Arc<ImageView>, bool)>>,
+    textures: Vec<Option<Texture>>,
+    material: Vec<Option<Material>>,
+    meshes: Vec<Option<Mesh>>,
 
-    default_texture: Option<Arc<ImageView>>,
+    default_texture: Option<Texture>,
 }
 impl Loader {
     fn new(
         allocators: Allocators,
         material_set_layout: Arc<DescriptorSetLayout>,
         queue_family: u32,
+        document: &gltf::Document,
     ) -> Self {
         let builder = AutoCommandBufferBuilder::primary(
             allocators.cmd.clone(),
@@ -45,41 +51,127 @@ impl Loader {
         Self {
             allocators,
             material_set_layout,
-            meshes: vec![],
-            textures: vec![],
-            material: vec![],
-            images: vec![],
+            meshes: Vec::from_iter(std::iter::repeat_with(|| None).take(document.meshes().len())),
+            textures: Vec::from_iter(
+                std::iter::repeat_with(|| None).take(document.textures().len()),
+            ),
+            material: Vec::from_iter(
+                std::iter::repeat_with(|| None).take(document.materials().len()),
+            ),
+            images: vec![None; document.images().len()],
             builder,
             default_texture: None,
         }
     }
 
-    fn load_images(&mut self, document: &gltf::Document, images: Vec<gltf::image::Data>) {
-        self.images = load_images(document, images, &self.allocators.mem, &mut self.builder);
+    fn load_scene(
+        &mut self,
+        scene: gltf::Scene,
+        buffers: &[gltf::buffer::Data],
+        images: &mut [Option<::image::RgbaImage>],
+    ) {
+        for node in scene.nodes() {
+            self.load_node(node, buffers, images);
+        }
+    }
+    fn load_node(
+        &mut self,
+        node: gltf::Node,
+        buffers: &[gltf::buffer::Data],
+        images: &mut [Option<::image::RgbaImage>],
+    ) {
+        if let Some(mesh) = node.mesh() {
+            self.load_mesh(mesh, buffers, images);
+        }
+        for child in node.children() {
+            self.load_node(child, buffers, images);
+        }
+    }
+    fn load_mesh(
+        &mut self,
+        mesh: gltf::Mesh,
+        buffers: &[gltf::buffer::Data],
+        images: &mut [Option<::image::RgbaImage>],
+    ) {
+        let i = mesh.index();
+        if self.meshes[i].is_some() {
+            return;
+        }
+
+        let mesh = Mesh::from_loader(mesh, buffers, images, self);
+        self.meshes[i] = Some(mesh);
+    }
+    fn get_material(
+        &mut self,
+        material: gltf::Material,
+        images: &mut [Option<::image::RgbaImage>],
+    ) -> Material {
+        // TODO: handle default materials
+        let Some(i) = material.index() else {
+            return Material {
+                set: Material::create_set(
+                    self.allocators.set.clone(),
+                    self.material_set_layout.clone(),
+                    self.get_default_texture(),
+                    self.get_default_texture(),
+                    self.get_default_texture(),
+                    self.get_default_texture(),
+                    self.get_default_texture(),
+                ),
+                tex_sets: Default::default(),
+            };
+        };
+        let mat = &self.material[i];
+        if mat.is_none() {
+            let mat = Material::from_loader(material, images, self);
+            self.material[i] = Some(mat)
+        }
+
+        self.material[i].clone().unwrap()
+    }
+    fn get_texture(
+        &mut self,
+        texture: gltf::Texture,
+        is_srgb: bool,
+        images: &mut [Option<::image::RgbaImage>],
+    ) -> Texture {
+        let i = texture.index();
+        let tex = &self.textures[i];
+        if tex.is_none() {
+            let tex = Texture::from_loader(texture, is_srgb, images, self);
+            self.textures[i] = Some(tex)
+        }
+
+        self.textures[i].clone().unwrap()
+    }
+    fn get_image(
+        &mut self,
+        image: gltf::Image,
+        is_srgb: bool,
+        images: &mut [Option<::image::RgbaImage>],
+    ) -> &Arc<ImageView> {
+        let i = image.index();
+        let img = &self.images[i];
+        if img.is_none() {
+            let img = load_image(
+                self.allocators.mem.clone(),
+                &mut self.builder,
+                images[i].take().unwrap(),
+                is_srgb,
+            );
+            self.images[i] = Some((img, is_srgb))
+        }
+
+        let (tex, srgb) = self.images[i].as_ref().unwrap();
+        assert_eq!(
+            is_srgb, *srgb,
+            "an image is being loaded as sRGB color data and linear RGB data which is weird and unimplemented"
+        );
+
+        tex
     }
 
-    fn load_textures(&mut self, document: &gltf::Document) {
-        self.textures = document
-            .textures()
-            .map(|texture| Arc::new(Texture::from_loader(texture, self)))
-            .collect();
-    }
-
-    fn load_materials(&mut self, document: &gltf::Document) {
-        self.material = document
-            .materials()
-            .map(|material| Arc::new(Material::from_loader(material, self)))
-            .collect();
-    }
-
-    fn load_meshes(&mut self, document: &gltf::Document, buffers: &[gltf::buffer::Data]) {
-        self.meshes = document
-            .meshes()
-            .map(|mesh| Arc::new(Mesh::from_loader(mesh, buffers, self)))
-            .collect();
-    }
-
-    fn get_default_texture(&mut self) -> &Arc<ImageView> {
+    fn get_default_texture(&mut self) -> Texture {
         if self.default_texture.is_none() {
             let image = Image::new(
                 self.allocators.mem.clone(),
@@ -93,15 +185,20 @@ impl Loader {
             )
             .unwrap();
             let view = ImageView::new_default(image).unwrap();
-            self.default_texture = Some(view);
+            let sampler = Sampler::new(
+                self.allocators.mem.device().clone(),
+                SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+            )
+            .unwrap();
+            self.default_texture = Some(Texture { view, sampler });
         }
-        self.default_texture.as_ref().unwrap()
+        self.default_texture.clone().unwrap()
     }
 }
 
 pub struct GltfLoader {
     pub cb: Arc<PrimaryAutoCommandBuffer>,
-    pub meshes: Vec<Arc<Mesh>>,
+    pub meshes: Vec<Option<Mesh>>,
     pub document: gltf::Document,
 }
 impl GltfLoader {
@@ -113,11 +210,12 @@ impl GltfLoader {
     ) -> gltf::Result<Self> {
         let (document, buffers, images) = gltf::import(path)?;
 
-        let mut loader = Loader::new(allocators, material_set_layout, queue_family);
-        loader.load_images(&document, images);
-        loader.load_textures(&document);
-        loader.load_materials(&document);
-        loader.load_meshes(&document, &buffers);
+        let mut loader = Loader::new(allocators, material_set_layout, queue_family, &document);
+        let mut images: Vec<_> = images
+            .into_iter()
+            .map(|data| Some(convert_image(data)))
+            .collect();
+        loader.load_scene(document.default_scene().unwrap(), &buffers, &mut images);
 
         Ok(Self {
             cb: loader.builder.build().unwrap(),
