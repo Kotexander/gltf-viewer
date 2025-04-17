@@ -14,7 +14,8 @@ use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
-        PrimaryAutoCommandBuffer, allocator::StandardCommandBufferAllocator,
+        PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract,
+        allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
         DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
@@ -29,6 +30,7 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::PipelineBindPoint,
     render_pass::Subpass,
+    sync::GpuFuture,
 };
 
 mod camera;
@@ -56,7 +58,7 @@ pub struct Triangle {
     allocators: Allocators,
 }
 impl Triangle {
-    pub fn new(allocators: Allocators, subpass: Subpass) -> Self {
+    pub fn new(allocators: Allocators, queue: Arc<Queue>, subpass: Subpass) -> Self {
         let camera = OrbitCamera::default();
         let camera_buffer = Buffer::from_data(
             allocators.mem.clone(),
@@ -77,7 +79,20 @@ impl Triangle {
         )
         .unwrap();
 
-        let renderer = Renderer::new(allocators.mem.clone(), subpass);
+        let mut builder = AutoCommandBufferBuilder::primary(
+            allocators.cmd.clone(),
+            queue.queue_family_index(),
+            CommandBufferUsage::OneTimeSubmit,
+        )
+        .unwrap();
+        let renderer = Renderer::new(allocators.mem.clone(), &mut builder, subpass);
+        let cb = builder.build().unwrap();
+        let _ = cb
+            .execute(queue)
+            .unwrap()
+            .then_signal_fence_and_flush()
+            .unwrap()
+            .wait(None);
 
         let camera_set = DescriptorSet::new(
             allocators.set.clone(),
@@ -104,22 +119,26 @@ impl Triangle {
         }
         let allocators = self.allocators.clone();
         let material_set_layout = self.renderer.material_set_layout.clone();
+
         let job = std::thread::spawn(move || {
-            let loader = GltfLoader::new(
-                allocators.clone(),
-                material_set_layout,
+            let builder = AutoCommandBufferBuilder::primary(
+                allocators.cmd.clone(),
                 queue.queue_family_index(),
-                &path,
+                CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
+            let loader =
+                GltfLoader::new(allocators.clone(), material_set_layout, builder, &path).unwrap();
 
             let info = GltfRenderInfo::from_scene(
                 allocators.mem.clone(),
                 loader.document.default_scene().unwrap(),
                 loader.meshes,
             );
-            (info, loader.cb)
+
+            (info, loader.builder.build().unwrap())
         });
+
         self.gltf_job = Some(job);
     }
     pub fn loading_gltf(&self) -> bool {

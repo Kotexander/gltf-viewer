@@ -1,11 +1,10 @@
-use std::{collections::BTreeMap, sync::Arc};
-
 use crate::{
-    cubemap::CubemapPipeline,
+    cubemap::{CubeMesh, CubemapPipeline},
     viewer::{GltfPipeline, GltfRenderInfo},
 };
+use std::{collections::BTreeMap, sync::Arc};
 use vulkano::{
-    command_buffer::AutoCommandBufferBuilder,
+    command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
     descriptor_set::{
         DescriptorSet,
         layout::{
@@ -43,9 +42,14 @@ pub struct Renderer {
 
     pub gltf_pipeline: GltfPipeline,
     pub gltf_info: Option<GltfRenderInfo>,
+    pub cube: CubeMesh,
 }
 impl Renderer {
-    pub fn new(allocator: Arc<StandardMemoryAllocator>, subpass: Subpass) -> Self {
+    pub fn new(
+        allocator: Arc<StandardMemoryAllocator>,
+        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        subpass: Subpass,
+    ) -> Self {
         let device = allocator.device();
 
         let camera_set_layout = DescriptorSetLayout::new(
@@ -100,10 +104,12 @@ impl Renderer {
             subpass.clone(),
         );
         let skybox_pipeline = CubemapPipeline::new(
-            allocator,
+            allocator.clone(),
             vec![camera_set_layout.clone(), cubemap_set_layout.clone()],
             subpass,
         );
+
+        let cube = CubeMesh::new(allocator, builder);
 
         Self {
             camera_set_layout,
@@ -115,18 +121,15 @@ impl Renderer {
             cube_mode: false,
             gltf_pipeline,
             gltf_info: None,
+            cube,
         }
     }
     pub fn render<L>(self, builder: &mut AutoCommandBufferBuilder<L>) {
         if let Some(gltf_info) = self.gltf_info {
             self.gltf_pipeline.render(gltf_info, builder);
         }
-        if self.cube_mode {
-            if let Some(cube_set) = self.cube_set {
-                self.skybox_pipeline.render_cube(builder, cube_set);
-            }
-        } else if let Some(equi_set) = self.equi_set {
-            self.skybox_pipeline.render_equi(builder, equi_set);
+        if let Some(equi) = self.equi_set {
+            CubemapPipeline::render(builder, self.skybox_pipeline.equi_pipeline, self.cube, equi);
         }
     }
 }

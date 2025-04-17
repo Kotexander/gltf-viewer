@@ -1,11 +1,9 @@
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
-    Validated,
-    buffer::{
-        AllocateBufferError, Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
-    },
-    command_buffer::AutoCommandBufferBuilder,
+    DeviceSize,
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
+    command_buffer::{AutoCommandBufferBuilder, CopyBufferInfoTyped, PrimaryAutoCommandBuffer},
     descriptor_set::{DescriptorSetsCollection, layout::DescriptorSetLayout},
     device::DeviceOwned,
     image::SampleCount,
@@ -76,6 +74,7 @@ const INDICES: [u16; 36] = [
     0, 4, 5,
 ];
 
+#[derive(Clone)]
 pub struct CubeMesh {
     vbuf: Subbuffer<[CubemapVertex]>,
     ibuf: Subbuffer<[u16]>,
@@ -84,47 +83,78 @@ pub struct CubeMesh {
 impl CubeMesh {
     pub fn new(
         allocator: Arc<dyn MemoryAllocator>,
-    ) -> Result<Self, Validated<AllocateBufferError>> {
-        let vbuf = Buffer::from_iter(
+        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    ) -> Self {
+        let vbuf_stage = Buffer::from_iter(
             allocator.clone(),
             BufferCreateInfo {
-                usage: BufferUsage::VERTEX_BUFFER,
+                usage: BufferUsage::TRANSFER_SRC,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             VERTICES,
-        )?;
-        let ibuf = Buffer::from_iter(
-            allocator,
+        )
+        .unwrap();
+        let ibuf_stage = Buffer::from_iter(
+            allocator.clone(),
             BufferCreateInfo {
-                usage: BufferUsage::INDEX_BUFFER,
+                usage: BufferUsage::TRANSFER_SRC,
                 ..Default::default()
             },
             AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
             INDICES,
-        )?;
+        )
+        .unwrap();
 
-        Ok(Self {
+        let vbuf = Buffer::new_slice(
+            allocator.clone(),
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_DST | BufferUsage::VERTEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+            VERTICES.len() as DeviceSize,
+        )
+        .unwrap();
+        let ibuf = Buffer::new_slice(
+            allocator,
+            BufferCreateInfo {
+                usage: BufferUsage::TRANSFER_DST | BufferUsage::INDEX_BUFFER,
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+            INDICES.len() as DeviceSize,
+        )
+        .unwrap();
+
+        builder
+            .copy_buffer(CopyBufferInfoTyped::buffers(vbuf_stage, vbuf.clone()))
+            .unwrap();
+        builder
+            .copy_buffer(CopyBufferInfoTyped::buffers(ibuf_stage, ibuf.clone()))
+            .unwrap();
+
+        Self {
             vbuf,
             ibuf,
             ilen: INDICES.len() as u32,
-        })
+        }
     }
 }
 
 #[derive(Clone)]
 pub struct CubemapPipeline {
-    pub mesh: Arc<CubeMesh>,
     pub cube_pipeline: Arc<GraphicsPipeline>,
     pub equi_pipeline: Arc<GraphicsPipeline>,
+    // pub conv_pipeline: Arc<GraphicsPipeline>,
 }
 impl CubemapPipeline {
     pub fn new(
@@ -180,58 +210,36 @@ impl CubemapPipeline {
             layout,
         );
 
-        let mesh = Arc::new(CubeMesh::new(alloc).unwrap());
+        // let mesh = Arc::new(CubeMesh::new(alloc).unwrap());
 
         Self {
-            mesh,
             cube_pipeline,
             equi_pipeline,
         }
     }
 
-    pub fn render_cube<L>(
-        &self,
+    pub fn render<L>(
         builder: &mut AutoCommandBufferBuilder<L>,
+        pipeline: Arc<GraphicsPipeline>,
+        mesh: CubeMesh,
         sets: impl DescriptorSetsCollection,
     ) {
         builder
-            .bind_pipeline_graphics(self.cube_pipeline.clone())
+            .bind_pipeline_graphics(pipeline.clone())
             .unwrap()
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
-                self.cube_pipeline.layout().clone(),
+                pipeline.layout().clone(),
                 1,
                 sets,
             )
             .unwrap()
-            .bind_vertex_buffers(0, self.mesh.vbuf.clone())
+            .bind_vertex_buffers(0, mesh.vbuf)
             .unwrap()
-            .bind_index_buffer(self.mesh.ibuf.clone())
+            .bind_index_buffer(mesh.ibuf)
             .unwrap();
 
-        unsafe { builder.draw_indexed(self.mesh.ilen, 1, 0, 0, 0).unwrap() };
-    }
-    pub fn render_equi<L>(
-        &self,
-        builder: &mut AutoCommandBufferBuilder<L>,
-        sets: impl DescriptorSetsCollection,
-    ) {
-        builder
-            .bind_pipeline_graphics(self.equi_pipeline.clone())
-            .unwrap()
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                self.equi_pipeline.layout().clone(),
-                1,
-                sets,
-            )
-            .unwrap()
-            .bind_vertex_buffers(0, self.mesh.vbuf.clone())
-            .unwrap()
-            .bind_index_buffer(self.mesh.ibuf.clone())
-            .unwrap();
-
-        unsafe { builder.draw_indexed(self.mesh.ilen, 1, 0, 0, 0).unwrap() };
+        unsafe { builder.draw_indexed(mesh.ilen, 1, 0, 0, 0).unwrap() };
     }
 
     fn create_graphics_pipeline(
@@ -346,7 +354,8 @@ void main() {
     vec4 color = texture(texSampler, uv);
     // f_color = color / (color + 1);
 
-    f_color = vec4(pow(color.rgb, vec3(1.0/2.2)), color.a);
+    // f_color = vec4(pow(color.rgb, vec3(1.0/2.2)), color.a);
+    f_color = color;
 }
         "#
     }

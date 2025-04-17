@@ -4,7 +4,7 @@ use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{AutoCommandBufferBuilder, CopyBufferToImageInfo, PrimaryAutoCommandBuffer},
     format::Format,
-    image::{ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
+    image::{Image, ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
 };
 
@@ -35,7 +35,7 @@ pub fn load_image(
         Format::R8G8B8A8_UNORM
     };
 
-    let image = vulkano::image::Image::new(
+    let image = Image::new(
         allocator.clone(),
         ImageCreateInfo {
             usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,

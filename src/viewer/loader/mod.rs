@@ -6,10 +6,7 @@ use std::{path::Path, sync::Arc};
 use texture::Texture;
 use vulkano::{
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
-    command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
-        PrimaryAutoCommandBuffer,
-    },
+    command_buffer::{AutoCommandBufferBuilder, CopyBufferToImageInfo, PrimaryAutoCommandBuffer},
     descriptor_set::layout::DescriptorSetLayout,
     device::DeviceOwned,
     format::Format,
@@ -42,16 +39,9 @@ impl Loader {
     fn new(
         allocators: Allocators,
         material_set_layout: Arc<DescriptorSetLayout>,
-        queue_family: u32,
+        builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         document: &gltf::Document,
     ) -> Self {
-        let builder = AutoCommandBufferBuilder::primary(
-            allocators.cmd.clone(),
-            queue_family,
-            CommandBufferUsage::OneTimeSubmit,
-        )
-        .unwrap();
-
         Self {
             allocators,
             material_set_layout,
@@ -222,7 +212,7 @@ impl Loader {
 }
 
 pub struct GltfLoader {
-    pub cb: Arc<PrimaryAutoCommandBuffer>,
+    pub builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     pub meshes: Vec<Option<Mesh>>,
     pub document: gltf::Document,
 }
@@ -230,12 +220,12 @@ impl GltfLoader {
     pub fn new(
         allocators: Allocators,
         material_set_layout: Arc<DescriptorSetLayout>,
-        queue_family: u32,
+        builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         path: impl AsRef<Path>,
     ) -> gltf::Result<Self> {
         let (document, buffers, images) = gltf::import(path)?;
 
-        let mut loader = Loader::new(allocators, material_set_layout, queue_family, &document);
+        let mut loader = Loader::new(allocators, material_set_layout, builder, &document);
         let mut images: Vec<_> = images
             .into_iter()
             .map(|data| Some(convert_image(data)))
@@ -243,7 +233,7 @@ impl GltfLoader {
         loader.load_scene(document.default_scene().unwrap(), &buffers, &mut images);
 
         Ok(Self {
-            cb: loader.builder.build().unwrap(),
+            builder: loader.builder,
             meshes: loader.meshes,
             document,
         })

@@ -155,7 +155,7 @@ impl ApplicationHandler for App {
             &self.context,
             &Default::default(),
             |swapchain_info| {
-                swapchain_info.image_format = Format::R8G8B8A8_UNORM;
+                swapchain_info.image_format = Format::R8G8B8A8_SRGB;
                 swapchain_info.image_usage |= ImageUsage::TRANSFER_DST;
                 // swapchain_info.min_image_count += 1;
                 // swapchain_info.present_mode = vulkano::swapchain::PresentMode::Mailbox;
@@ -174,10 +174,17 @@ impl ApplicationHandler for App {
             renderer.graphics_queue(),
             frame_info.subpass().clone(),
             renderer.swapchain_format(),
-            GuiConfig::default(),
+            GuiConfig {
+                allow_srgb_render_target: true,
+                ..Default::default()
+            },
         );
 
-        let triangle = Triangle::new(self.allocators.clone(), frame_info.subpass().clone());
+        let triangle = Triangle::new(
+            self.allocators.clone(),
+            self.context.graphics_queue().clone(),
+            frame_info.subpass().clone(),
+        );
         let mut gltf_picker =
             FileDialog::open_file(Some(std::env::current_dir().unwrap_or(".".into())))
                 .id("Gltf")
@@ -272,19 +279,13 @@ impl ApplicationHandler for App {
                     if window.gltf_picker.show(&ctx).selected() {
                         window.triangle.load_gltf(
                             window.gltf_picker.path().unwrap().into(),
-                            self.context
-                                .transfer_queue()
-                                .unwrap_or(self.context.graphics_queue())
-                                .clone(),
+                            self.context.graphics_queue().clone(),
                         );
                     }
                     if window.skybox_picker.show(&ctx).selected() {
                         window.triangle.load_skybox(
                             window.skybox_picker.path().unwrap().into(),
-                            self.context
-                                .transfer_queue()
-                                .unwrap_or(self.context.graphics_queue())
-                                .clone(),
+                            self.context.graphics_queue().clone(),
                         );
                     }
                     window.triangle.ui(&ctx);
@@ -296,25 +297,13 @@ impl ApplicationHandler for App {
                     Ok(mut before_future) => {
                         if let Some(cb) = window.triangle.update_gltf() {
                             before_future = before_future
-                                .then_execute(
-                                    self.context
-                                        .transfer_queue()
-                                        .unwrap_or(self.context.graphics_queue())
-                                        .clone(),
-                                    cb,
-                                )
+                                .then_execute(self.context.graphics_queue().clone(), cb)
                                 .unwrap()
                                 .boxed();
                         }
                         if let Some(cb) = window.triangle.update_skybox() {
                             before_future = before_future
-                                .then_execute(
-                                    self.context
-                                        .transfer_queue()
-                                        .unwrap_or(self.context.graphics_queue())
-                                        .clone(),
-                                    cb,
-                                )
+                                .then_execute(self.context.graphics_queue().clone(), cb)
                                 .unwrap()
                                 .boxed();
                         }

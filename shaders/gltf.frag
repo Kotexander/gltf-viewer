@@ -80,6 +80,13 @@ vec3 pbr_neutral_tone_mapping(vec3 color) {
     return mix(color, newPeak * vec3(1, 1, 1), g);
 }
 
+vec3 lights[] = {
+        vec3(-1.0, 1.0, 0.0),
+        vec3(1.0, -1.0, 0.0),
+        vec3(0.0, 1.0, -1.0),
+        vec3(0.0, -1.0, 1.0),
+    };
+
 void main() {
     // f_color = vec4((normalize(normal) + 1.0) / 2.0, 1.0);
     // f_color = vec4(normalize(normal), 1.0);
@@ -99,33 +106,36 @@ void main() {
     vec3 V = normalize(cam.view_inv[3].xyz - position);
     vec3 f0 = mix(vec3(0.04), albedo, rm.y);
 
-    vec3 light_colour = vec3(5.0);
-    vec3 L = normalize(vec3(1.0, 1.0, 1.0));
-    vec3 H = normalize(L + V);
-
     float n_dot_v = max(dot(N, V), 0.0000001);
-    float n_dot_l = max(dot(N, L), 0.0000001);
-    float n_dot_h = max(dot(N, H), 0.0);
-    float h_dot_v = max(dot(H, V), 0.0);
 
-    float d = distribution_ggx(n_dot_h, rm.x);
-    float g = geometry_smith(n_dot_v, n_dot_l, rm.x);
-    vec3 f = fresnel_shlick(h_dot_v, f0);
+    vec3 Lo = vec3(0.0);
+    for (int i = 0; i < 2; i++) {
+        vec3 L = normalize(lights[i]);
+        vec3 H = normalize(L + V);
 
-    vec3 specular_num = d * g * f;
-    float specular_denum = 4.0 * n_dot_v * n_dot_l;
-    vec3 specular = specular_num / specular_denum;
+        float n_dot_l = max(dot(N, L), 0.0000001);
+        float n_dot_h = max(dot(N, H), 0.0);
+        float h_dot_v = max(dot(H, V), 0.0);
 
-    vec3 kd = vec3(1.0) - f;
-    kd *= 1.0 - rm.y;
+        float d = distribution_ggx(n_dot_h, rm.x);
+        float g = geometry_smith(n_dot_v, n_dot_l, rm.x);
+        vec3 f = fresnel_shlick(h_dot_v, f0);
 
-    vec3 lambert = albedo / PI;
+        vec3 specular_num = d * g * f;
+        float specular_denum = 4.0 * n_dot_v * n_dot_l;
+        vec3 specular = specular_num / specular_denum;
 
-    vec3 brdf = kd * lambert + specular;
-    vec3 color = brdf * light_colour * n_dot_l + em;
-    vec3 ambient = vec3(1.0) * albedo * ao;
-    color += ambient;
+        vec3 kd = vec3(1.0) - f;
+        kd *= 1.0 - rm.y;
+
+        vec3 lambert = albedo / PI;
+        vec3 brdf = kd * lambert + specular;
+        Lo += brdf * vec3(1.0) * n_dot_l;
+    }
+
+    vec3 ambient = vec3(0.0) * albedo * ao;
+    vec3 color = Lo + ambient + em;
     // vec3 tone_map = color / (color + vec3(1.0));
     // f_color = vec4(tone_map, 1.0);
-    f_color = vec4(pbr_neutral_tone_mapping(color), 1.0);
+    f_color = vec4(color, 1.0);
 }
