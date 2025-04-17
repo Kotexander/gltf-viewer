@@ -1,18 +1,11 @@
-use nalgebra_glm as glm;
+use mesh::CubemapVertex;
 use std::sync::Arc;
 use vulkano::{
-    DeviceSize,
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
-    command_buffer::{AutoCommandBufferBuilder, CopyBufferInfoTyped, PrimaryAutoCommandBuffer},
-    descriptor_set::{DescriptorSetsCollection, layout::DescriptorSetLayout},
-    device::DeviceOwned,
-    image::SampleCount,
-    memory::allocator::{
-        AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter, StandardMemoryAllocator,
-    },
+    descriptor_set::layout::DescriptorSetLayout,
+    device::{Device, DeviceOwned},
+    image::{ImageAspects, SampleCount},
     pipeline::{
-        DynamicState, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout,
-        PipelineShaderStageCreateInfo,
+        DynamicState, GraphicsPipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         graphics::{
             GraphicsPipelineCreateInfo,
             color_blend::{ColorBlendAttachmentState, ColorBlendState},
@@ -26,231 +19,101 @@ use vulkano::{
         layout::PipelineLayoutCreateInfo,
     },
     render_pass::Subpass,
+    shader::EntryPoint,
 };
 
-#[repr(C)]
-#[derive(BufferContents, Vertex)]
-struct CubemapVertex {
-    #[format(R32G32B32_SFLOAT)]
-    position: glm::Vec3,
+mod mesh;
+pub mod renderer;
+
+pub use mesh::CubeMesh;
+
+pub struct CubemapShaders {
+    pub vs: EntryPoint,
+    pub vertex_input_state: VertexInputState,
+    pub equi_fs: EntryPoint,
+    pub cube_fs: EntryPoint,
 }
-
-#[rustfmt::skip]
-const VERTICES: [CubemapVertex; 8] = [
-    CubemapVertex { position: glm::Vec3::new(-0.5, -0.5, -0.5) },
-    CubemapVertex { position: glm::Vec3::new( 0.5, -0.5, -0.5) },
-    CubemapVertex { position: glm::Vec3::new( 0.5,  0.5, -0.5) },
-    CubemapVertex { position: glm::Vec3::new(-0.5,  0.5, -0.5) },
-    CubemapVertex { position: glm::Vec3::new(-0.5, -0.5,  0.5) },
-    CubemapVertex { position: glm::Vec3::new( 0.5, -0.5,  0.5) },
-    CubemapVertex { position: glm::Vec3::new( 0.5,  0.5,  0.5) },
-    CubemapVertex { position: glm::Vec3::new(-0.5,  0.5,  0.5) },
-];
-
-#[rustfmt::skip]
-const INDICES: [u16; 36] = [
-    // back face (z+)
-    6, 5, 4,
-    4, 7, 6,
-
-    // front face (z-)
-    2, 3, 0,
-    0, 1, 2,
-
-    // left face (x-)
-    7, 4, 0,
-    0, 3, 7,
-
-    // right face (x+)
-    6, 2, 1,
-    1, 5, 6,
-
-    // top face (y+)
-    6, 7, 3,
-    3, 2, 6,
-
-    // bottom face (y-)
-    5, 1, 0,
-    0, 4, 5,
-];
-
-#[derive(Clone)]
-pub struct CubeMesh {
-    vbuf: Subbuffer<[CubemapVertex]>,
-    ibuf: Subbuffer<[u16]>,
-    ilen: u32,
-}
-impl CubeMesh {
-    pub fn new(
-        allocator: Arc<dyn MemoryAllocator>,
-        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    ) -> Self {
-        let vbuf_stage = Buffer::from_iter(
-            allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            VERTICES,
-        )
-        .unwrap();
-        let ibuf_stage = Buffer::from_iter(
-            allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_SRC,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                    | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                ..Default::default()
-            },
-            INDICES,
-        )
-        .unwrap();
-
-        let vbuf = Buffer::new_slice(
-            allocator.clone(),
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST | BufferUsage::VERTEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo::default(),
-            VERTICES.len() as DeviceSize,
-        )
-        .unwrap();
-        let ibuf = Buffer::new_slice(
-            allocator,
-            BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST | BufferUsage::INDEX_BUFFER,
-                ..Default::default()
-            },
-            AllocationCreateInfo::default(),
-            INDICES.len() as DeviceSize,
-        )
-        .unwrap();
-
-        builder
-            .copy_buffer(CopyBufferInfoTyped::buffers(vbuf_stage, vbuf.clone()))
-            .unwrap();
-        builder
-            .copy_buffer(CopyBufferInfoTyped::buffers(ibuf_stage, ibuf.clone()))
-            .unwrap();
-
-        Self {
-            vbuf,
-            ibuf,
-            ilen: INDICES.len() as u32,
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct CubemapPipeline {
-    pub cube_pipeline: Arc<GraphicsPipeline>,
-    pub equi_pipeline: Arc<GraphicsPipeline>,
-    // pub conv_pipeline: Arc<GraphicsPipeline>,
-}
-impl CubemapPipeline {
-    pub fn new(
-        alloc: Arc<StandardMemoryAllocator>,
-        set_layouts: Vec<Arc<DescriptorSetLayout>>,
-        subpass: Subpass,
-    ) -> Self {
-        let vs = vs::load(alloc.device().clone())
+impl CubemapShaders {
+    pub fn new(device: Arc<Device>) -> Self {
+        let vs = vs::load(device.clone())
             .unwrap()
             .entry_point("main")
             .unwrap();
-        let cube_fs = cube_fs::load(alloc.device().clone())
-            .unwrap()
-            .entry_point("main")
-            .unwrap();
-        let equi_fs = equi_fs::load(alloc.device().clone())
-            .unwrap()
-            .entry_point("main")
-            .unwrap();
-
-        let layout = PipelineLayout::new(
-            alloc.device().clone(),
-            PipelineLayoutCreateInfo {
-                set_layouts,
-                ..Default::default()
-            },
-        )
-        .unwrap();
-
         let vertex_input_state = CubemapVertex::per_vertex().definition(&vs).unwrap();
 
-        let cube_stages = [
-            PipelineShaderStageCreateInfo::new(vs.clone()),
-            PipelineShaderStageCreateInfo::new(cube_fs),
-        ];
-        let equi_stages = [
-            PipelineShaderStageCreateInfo::new(vs),
-            PipelineShaderStageCreateInfo::new(equi_fs),
-        ];
-
-        let equi_pipeline = Self::create_graphics_pipeline(
-            &alloc,
-            subpass.clone(),
-            vertex_input_state.clone(),
-            equi_stages,
-            layout.clone(),
-        );
-        let cube_pipeline = Self::create_graphics_pipeline(
-            &alloc,
-            subpass,
-            vertex_input_state,
-            cube_stages,
-            layout,
-        );
-
-        // let mesh = Arc::new(CubeMesh::new(alloc).unwrap());
+        let cube_fs = cube_fs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+        let equi_fs = equi_fs::load(device).unwrap().entry_point("main").unwrap();
 
         Self {
-            cube_pipeline,
-            equi_pipeline,
+            vs,
+            vertex_input_state,
+            equi_fs,
+            cube_fs,
         }
     }
+}
 
-    pub fn render<L>(
-        builder: &mut AutoCommandBufferBuilder<L>,
-        pipeline: Arc<GraphicsPipeline>,
-        mesh: CubeMesh,
-        sets: impl DescriptorSetsCollection,
-    ) {
-        builder
-            .bind_pipeline_graphics(pipeline.clone())
-            .unwrap()
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                pipeline.layout().clone(),
-                1,
-                sets,
-            )
-            .unwrap()
-            .bind_vertex_buffers(0, mesh.vbuf)
-            .unwrap()
-            .bind_index_buffer(mesh.ibuf)
-            .unwrap();
+#[derive(Clone)]
+pub struct CubemapPipelineLayout {
+    pub layout: Arc<PipelineLayout>,
+}
+impl CubemapPipelineLayout {
+    pub fn new(
+        device: Arc<Device>,
+        camera_layout: Arc<DescriptorSetLayout>,
+        texture_layout: Arc<DescriptorSetLayout>,
+    ) -> Self {
+        let layout = PipelineLayout::new(
+            device,
+            PipelineLayoutCreateInfo {
+                set_layouts: vec![camera_layout, texture_layout],
+                ..Default::default()
+            },
+        )
+        .unwrap();
 
-        unsafe { builder.draw_indexed(mesh.ilen, 1, 0, 0, 0).unwrap() };
+        Self { layout }
     }
-
-    fn create_graphics_pipeline(
-        alloc: &Arc<StandardMemoryAllocator>,
-        subpass: Subpass,
+    pub fn create_pipeline(
+        self,
+        vs: EntryPoint,
+        fs: EntryPoint,
         vertex_input_state: VertexInputState,
-        stages: [PipelineShaderStageCreateInfo; 2],
-        layout: Arc<PipelineLayout>,
+        subpass: Subpass,
     ) -> Arc<GraphicsPipeline> {
+        let stages = [
+            PipelineShaderStageCreateInfo::new(vs),
+            PipelineShaderStageCreateInfo::new(fs),
+        ];
+
+        let has_depth_buffer = subpass
+            .subpass_desc()
+            .depth_stencil_attachment
+            .as_ref()
+            .is_some_and(|ar| {
+                subpass.render_pass().attachments()[ar.attachment as usize]
+                    .format
+                    .aspects()
+                    .intersects(ImageAspects::DEPTH)
+            });
+
+        let depth_stencil_state = if has_depth_buffer {
+            Some(DepthStencilState {
+                depth: Some(DepthState {
+                    write_enable: true,
+                    compare_op: CompareOp::LessOrEqual,
+                }),
+                ..Default::default()
+            })
+        } else {
+            None
+        };
+
         GraphicsPipeline::new(
-            alloc.device().clone(),
+            self.layout.device().clone(),
             None,
             GraphicsPipelineCreateInfo {
                 stages: stages.into_iter().collect(),
@@ -270,18 +133,12 @@ impl CubemapPipeline {
                     subpass.num_color_attachments(),
                     ColorBlendAttachmentState::default(),
                 )),
-                depth_stencil_state: Some(DepthStencilState {
-                    depth: Some(DepthState {
-                        write_enable: true,
-                        compare_op: CompareOp::LessOrEqual,
-                    }),
-                    ..Default::default()
-                }),
+                depth_stencil_state,
                 dynamic_state: [DynamicState::Viewport, DynamicState::Scissor]
                     .into_iter()
                     .collect(),
                 subpass: Some(subpass.into()),
-                ..GraphicsPipelineCreateInfo::layout(layout)
+                ..GraphicsPipelineCreateInfo::layout(self.layout)
             },
         )
         .unwrap()

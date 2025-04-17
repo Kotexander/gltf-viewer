@@ -9,25 +9,24 @@ use vulkano::{
 };
 
 pub struct FrameInfo {
-    depth_buffer: Arc<ImageView>,
-    msaa_buffer: Arc<ImageView>,
     frame_buffers: Vec<Arc<Framebuffer>>,
-    render_pass: Arc<RenderPass>,
     subpass: Subpass,
     mem_alloc: Arc<StandardMemoryAllocator>,
 }
 impl FrameInfo {
     const DEPTH_FORMAT: Format = Format::D32_SFLOAT;
+    const SAMPLES: SampleCount = SampleCount::Sample4;
 
-    pub fn new(mem_alloc: Arc<StandardMemoryAllocator>, views: Vec<Arc<ImageView>>) -> Self {
+    pub fn new(mem_alloc: Arc<StandardMemoryAllocator>, views: &[Arc<ImageView>]) -> Self {
         let format = views[0].image().format();
+        let extent = views[0].image().extent();
 
         let render_pass = vulkano::single_pass_renderpass!(
             mem_alloc.device().clone(),
             attachments: {
                 intermediary: {
                   format: format,
-                  samples: 4,
+                  samples: Self::SAMPLES as u32,
                   load_op: Clear,
                   store_op: DontCare,
                 },
@@ -39,7 +38,7 @@ impl FrameInfo {
                 },
                 depth_stencil: {
                     format: Self::DEPTH_FORMAT,
-                    samples: 4,
+                    samples: Self::SAMPLES as u32,
                     load_op: Clear,
                     store_op: DontCare,
                 },
@@ -53,30 +52,26 @@ impl FrameInfo {
         .unwrap();
         let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
 
-        let extent = views[0].image().extent();
         let depth_buffer = Self::create_depth_buffer(mem_alloc.clone(), extent);
         let msaa_buffer = Self::create_mssa_buffer(mem_alloc.clone(), format, extent);
         let frame_buffers =
             Self::create_frame_buffers(&render_pass, &msaa_buffer, &depth_buffer, views);
 
         Self {
-            depth_buffer,
-            msaa_buffer,
             frame_buffers,
-            render_pass,
             subpass,
             mem_alloc,
         }
     }
-    pub fn recreate(&mut self, views: Vec<Arc<ImageView>>) {
+    pub fn recreate(&mut self, views: &[Arc<ImageView>]) {
         let extent = views[0].image().extent();
         let format = views[0].image().format();
-        self.depth_buffer = Self::create_depth_buffer(self.mem_alloc.clone(), extent);
-        self.msaa_buffer = Self::create_mssa_buffer(self.mem_alloc.clone(), format, extent);
+        let depth_buffer = Self::create_depth_buffer(self.mem_alloc.clone(), extent);
+        let msaa_buffer = Self::create_mssa_buffer(self.mem_alloc.clone(), format, extent);
         self.frame_buffers = Self::create_frame_buffers(
-            &self.render_pass,
-            &self.msaa_buffer,
-            &self.depth_buffer,
+            self.subpass.render_pass(),
+            &msaa_buffer,
+            &depth_buffer,
             views,
         );
     }
@@ -101,7 +96,7 @@ impl FrameInfo {
                     image_type: ImageType::Dim2d,
                     format: Self::DEPTH_FORMAT,
                     extent,
-                    samples: SampleCount::Sample4,
+                    samples: Self::SAMPLES,
                     usage: ImageUsage::DEPTH_STENCIL_ATTACHMENT | ImageUsage::TRANSIENT_ATTACHMENT,
                     ..Default::default()
                 },
@@ -123,7 +118,7 @@ impl FrameInfo {
                     image_type: ImageType::Dim2d,
                     format,
                     extent,
-                    samples: SampleCount::Sample4,
+                    samples: Self::SAMPLES,
                     usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::TRANSIENT_ATTACHMENT,
                     ..Default::default()
                 },
@@ -137,15 +132,15 @@ impl FrameInfo {
         render_pass: &Arc<RenderPass>,
         msaa_buffer: &Arc<ImageView>,
         depth_buffer: &Arc<ImageView>,
-        views: Vec<Arc<ImageView>>,
+        views: &[Arc<ImageView>],
     ) -> Vec<Arc<Framebuffer>> {
         views
-            .into_iter()
+            .iter()
             .map(|view| {
                 Framebuffer::new(
                     render_pass.clone(),
                     FramebufferCreateInfo {
-                        attachments: vec![msaa_buffer.clone(), view, depth_buffer.clone()],
+                        attachments: vec![msaa_buffer.clone(), view.clone(), depth_buffer.clone()],
                         ..Default::default()
                     },
                 )

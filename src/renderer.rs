@@ -1,5 +1,9 @@
 use crate::{
-    cubemap::{CubeMesh, CubemapPipeline},
+    Allocators,
+    cubemap::{
+        CubeMesh, CubemapPipelineLayout, CubemapShaders,
+        renderer::{EquiRenderPass, EquiRendererPipeline},
+    },
     viewer::{GltfPipeline, GltfRenderInfo},
 };
 use std::{collections::BTreeMap, sync::Arc};
@@ -12,8 +16,8 @@ use vulkano::{
             DescriptorType,
         },
     },
-    device::DeviceOwned,
-    memory::allocator::StandardMemoryAllocator,
+    device::{Device, DeviceOwned},
+    pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint},
     render_pass::Subpass,
     shader::ShaderStages,
 };
@@ -29,30 +33,14 @@ fn texture_layout(set: u32) -> (u32, DescriptorSetLayoutBinding) {
 }
 
 #[derive(Clone)]
-pub struct Renderer {
-    pub camera_set_layout: Arc<DescriptorSetLayout>,
-    pub cubemap_set_layout: Arc<DescriptorSetLayout>,
-    pub material_set_layout: Arc<DescriptorSetLayout>,
-
-    pub skybox_pipeline: CubemapPipeline,
-
-    pub equi_set: Option<Arc<DescriptorSet>>,
-    pub cube_set: Option<Arc<DescriptorSet>>,
-    pub cube_mode: bool,
-
-    pub gltf_pipeline: GltfPipeline,
-    pub gltf_info: Option<GltfRenderInfo>,
-    pub cube: CubeMesh,
+pub struct SetLayouts {
+    pub camera: Arc<DescriptorSetLayout>,
+    pub texture: Arc<DescriptorSetLayout>,
+    pub material: Arc<DescriptorSetLayout>,
 }
-impl Renderer {
-    pub fn new(
-        allocator: Arc<StandardMemoryAllocator>,
-        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-        subpass: Subpass,
-    ) -> Self {
-        let device = allocator.device();
-
-        let camera_set_layout = DescriptorSetLayout::new(
+impl SetLayouts {
+    pub fn new(device: Arc<Device>) -> Self {
+        let camera = DescriptorSetLayout::new(
             device.clone(),
             DescriptorSetLayoutCreateInfo {
                 bindings: BTreeMap::from([(
@@ -66,7 +54,7 @@ impl Renderer {
             },
         )
         .unwrap();
-        let material_set_layout = DescriptorSetLayout::new(
+        let material = DescriptorSetLayout::new(
             device.clone(),
             DescriptorSetLayoutCreateInfo {
                 bindings: BTreeMap::from([
@@ -89,8 +77,8 @@ impl Renderer {
             },
         )
         .unwrap();
-        let cubemap_set_layout = DescriptorSetLayout::new(
-            device.clone(),
+        let texture_set_layout = DescriptorSetLayout::new(
+            device,
             DescriptorSetLayoutCreateInfo {
                 bindings: BTreeMap::from([texture_layout(0)]),
                 ..Default::default()
@@ -98,23 +86,85 @@ impl Renderer {
         )
         .unwrap();
 
-        let gltf_pipeline = GltfPipeline::new(
+        Self {
+            camera,
+            texture: texture_set_layout,
+            material,
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct Renderer {
+    pub set_layouts: SetLayouts,
+    pub skybox_pipeline: Arc<GraphicsPipeline>,
+    pub equi_pipeline: Arc<GraphicsPipeline>,
+
+    pub equi_set: Option<Arc<DescriptorSet>>,
+    pub cube_set: Option<Arc<DescriptorSet>>,
+    pub cube_mode: bool,
+
+    pub gltf_pipeline: GltfPipeline,
+    pub gltf_info: Option<GltfRenderInfo>,
+
+    pub equi_renderer: EquiRendererPipeline,
+    pub cube: CubeMesh,
+}
+impl Renderer {
+    pub fn new(
+        allocators: Allocators,
+        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        subpass: Subpass,
+    ) -> Self {
+        let device = allocators.mem.device();
+
+        let set_layouts = SetLayouts::new(device.clone());
+
+        let cubemap_pipeline_layout = CubemapPipelineLayout::new(
             device.clone(),
-            vec![camera_set_layout.clone(), material_set_layout.clone()],
+            set_layouts.camera.clone(),
+            set_layouts.texture.clone(),
+        );
+        let cubemap_shaders = CubemapShaders::new(device.clone());
+        let skybox_pipeline = cubemap_pipeline_layout.clone().create_pipeline(
+            cubemap_shaders.vs.clone(),
+            cubemap_shaders.cube_fs,
+            cubemap_shaders.vertex_input_state.clone(),
             subpass.clone(),
         );
-        let skybox_pipeline = CubemapPipeline::new(
-            allocator.clone(),
-            vec![camera_set_layout.clone(), cubemap_set_layout.clone()],
-            subpass,
+
+        let gltf_pipeline = GltfPipeline::new(
+            device.clone(),
+            vec![set_layouts.camera.clone(), set_layouts.material.clone()],
+            subpass.clone(),
         );
 
-        let cube = CubeMesh::new(allocator, builder);
+        let cube = CubeMesh::new(allocators.mem.clone(), builder);
+
+        let equi_render_pass = EquiRenderPass::new(
+            device.clone(),
+            allocators.mem.clone(),
+            allocators.set.clone(),
+            set_layouts.camera.clone(),
+        );
+        let equi_renderer = EquiRendererPipeline {
+            pipeline: cubemap_pipeline_layout.clone().create_pipeline(
+                cubemap_shaders.vs.clone(),
+                cubemap_shaders.equi_fs.clone(),
+                cubemap_shaders.vertex_input_state.clone(),
+                equi_render_pass.subpass.clone(),
+            ),
+            renderer: equi_render_pass,
+            cube: cube.clone(),
+        };
+        let equi_pipeline = cubemap_pipeline_layout.clone().create_pipeline(
+            cubemap_shaders.vs,
+            cubemap_shaders.equi_fs,
+            cubemap_shaders.vertex_input_state,
+            subpass.clone(),
+        );
 
         Self {
-            camera_set_layout,
-            cubemap_set_layout,
-            material_set_layout,
             skybox_pipeline,
             equi_set: None,
             cube_set: None,
@@ -122,14 +172,35 @@ impl Renderer {
             gltf_pipeline,
             gltf_info: None,
             cube,
+            set_layouts,
+            equi_renderer,
+            equi_pipeline,
         }
     }
     pub fn render<L>(self, builder: &mut AutoCommandBufferBuilder<L>) {
         if let Some(gltf_info) = self.gltf_info {
             self.gltf_pipeline.render(gltf_info, builder);
         }
-        if let Some(equi) = self.equi_set {
-            CubemapPipeline::render(builder, self.skybox_pipeline.equi_pipeline, self.cube, equi);
+        if self.cube_mode {
+            if let Some(cube) = self.cube_set {
+                let layout = self.skybox_pipeline.layout().clone();
+                builder
+                    .bind_pipeline_graphics(self.skybox_pipeline)
+                    .unwrap()
+                    .bind_descriptor_sets(PipelineBindPoint::Graphics, layout, 1, cube)
+                    .unwrap();
+                self.cube.render(builder);
+            }
+        } else {
+            if let Some(equi) = self.equi_set {
+                let layout = self.equi_pipeline.layout().clone();
+                builder
+                    .bind_pipeline_graphics(self.equi_pipeline)
+                    .unwrap()
+                    .bind_descriptor_sets(PipelineBindPoint::Graphics, layout, 1, equi)
+                    .unwrap();
+                self.cube.render(builder);
+            }
         }
     }
 }

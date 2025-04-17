@@ -1,4 +1,5 @@
 use camera::OrbitCamera;
+use cubemap::renderer::create_cubemap_image;
 use egui_winit_vulkano::CallbackFn;
 use image::EncodableLayout;
 use nalgebra_glm as glm;
@@ -23,9 +24,9 @@ use vulkano::{
     device::{DeviceOwned, Queue},
     format::Format,
     image::{
-        Image, ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage,
+        Image, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage,
         sampler::{Sampler, SamplerCreateInfo},
-        view::ImageView,
+        view::{ImageView, ImageViewCreateInfo, ImageViewType},
     },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::PipelineBindPoint,
@@ -53,7 +54,12 @@ pub struct Triangle {
     renderer: Renderer,
 
     gltf_job: Option<JoinHandle<(GltfRenderInfo, Arc<PrimaryAutoCommandBuffer>)>>,
-    skybox_job: Option<JoinHandle<(Arc<Image>, Arc<PrimaryAutoCommandBuffer>)>>,
+    skybox_job: Option<
+        JoinHandle<(
+            (Arc<DescriptorSet>, Arc<DescriptorSet>),
+            Arc<PrimaryAutoCommandBuffer>,
+        )>,
+    >,
 
     allocators: Allocators,
 }
@@ -85,7 +91,7 @@ impl Triangle {
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
-        let renderer = Renderer::new(allocators.mem.clone(), &mut builder, subpass);
+        let renderer = Renderer::new(allocators.clone(), &mut builder, subpass);
         let cb = builder.build().unwrap();
         let _ = cb
             .execute(queue)
@@ -96,7 +102,7 @@ impl Triangle {
 
         let camera_set = DescriptorSet::new(
             allocators.set.clone(),
-            renderer.camera_set_layout.clone(),
+            renderer.set_layouts.camera.clone(),
             [WriteDescriptorSet::buffer(0, camera_buffer.clone())],
             [],
         )
@@ -118,7 +124,7 @@ impl Triangle {
             return;
         }
         let allocators = self.allocators.clone();
-        let material_set_layout = self.renderer.material_set_layout.clone();
+        let material_set_layout = self.renderer.set_layouts.material.clone();
 
         let job = std::thread::spawn(move || {
             let builder = AutoCommandBufferBuilder::primary(
@@ -150,6 +156,8 @@ impl Triangle {
             return;
         }
         let allocators = self.allocators.clone();
+        let renderer = self.renderer.equi_renderer.clone();
+        let texture_layout = self.renderer.set_layouts.texture.clone();
         let job = std::thread::spawn(move || {
             let mut builder = AutoCommandBufferBuilder::primary(
                 allocators.cmd,
@@ -157,9 +165,74 @@ impl Triangle {
                 CommandBufferUsage::OneTimeSubmit,
             )
             .unwrap();
-            let skybox = load_skybox(allocators.mem, path, &mut builder);
+
+            let equi = load_skybox(allocators.mem.clone(), path, &mut builder);
+            let equi_view = ImageView::new_default(equi.clone()).unwrap();
+            let equi_set = DescriptorSet::new(
+                allocators.set.clone(),
+                texture_layout.clone(),
+                [WriteDescriptorSet::image_view_sampler(
+                    0,
+                    equi_view,
+                    Sampler::new(
+                        allocators.mem.device().clone(),
+                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+                    )
+                    .unwrap(),
+                )],
+                [],
+            )
+            .unwrap();
+
+            let cube = create_cubemap_image(allocators.mem.clone(), equi.extent()[1]);
+            let views: Vec<_> = (0u32..6u32)
+                .into_iter()
+                .map(|i| {
+                    ImageView::new(
+                        cube.clone(),
+                        ImageViewCreateInfo {
+                            view_type: ImageViewType::Dim2d,
+                            format: cube.format(),
+                            subresource_range: ImageSubresourceRange {
+                                aspects: cube.format().aspects(),
+                                mip_levels: 0..1,
+                                array_layers: i..i + 1,
+                            },
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap()
+                })
+                .collect();
+
+            renderer.render(&mut builder, &equi_set, &views);
+
+            let cube_view = ImageView::new(
+                cube.clone(),
+                ImageViewCreateInfo {
+                    view_type: ImageViewType::Cube,
+                    ..ImageViewCreateInfo::from_image(&cube)
+                },
+            )
+            .unwrap();
+            let cube_set = DescriptorSet::new(
+                allocators.set.clone(),
+                texture_layout.clone(),
+                [WriteDescriptorSet::image_view_sampler(
+                    0,
+                    cube_view,
+                    Sampler::new(
+                        allocators.mem.device().clone(),
+                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+                    )
+                    .unwrap(),
+                )],
+                [],
+            )
+            .unwrap();
+
             let cb = builder.build().unwrap();
-            (skybox, cb)
+            ((equi_set, cube_set), cb)
         });
         self.skybox_job = Some(job);
     }
@@ -182,24 +255,11 @@ impl Triangle {
             .as_ref()
             .is_some_and(|job| job.is_finished())
         {
-            let (skybox, cb) = self.skybox_job.take().unwrap().join().unwrap();
-            let view = ImageView::new_default(skybox).unwrap();
-            let set = DescriptorSet::new(
-                self.allocators.set.clone(),
-                self.renderer.cubemap_set_layout.clone(),
-                [WriteDescriptorSet::image_view_sampler(
-                    0,
-                    view,
-                    Sampler::new(
-                        self.allocators.mem.device().clone(),
-                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-                    )
-                    .unwrap(),
-                )],
-                [],
-            )
-            .unwrap();
-            self.renderer.equi_set = Some(set);
+            let ((equi, cube), cb) = self.skybox_job.take().unwrap().join().unwrap();
+
+            self.renderer.equi_set = Some(equi);
+            self.renderer.cube_set = Some(cube);
+
             Some(cb)
         } else {
             None
@@ -312,78 +372,6 @@ impl Triangle {
     }
 }
 
-fn load_cubemap<L>(
-    mem_alloc: Arc<StandardMemoryAllocator>,
-    builder: &mut AutoCommandBufferBuilder<L>,
-) -> Arc<Image> {
-    let paths = [
-        "assets/Yokohama/posx.jpg",
-        "assets/Yokohama/negx.jpg",
-        "assets/Yokohama/posy.jpg",
-        "assets/Yokohama/negy.jpg",
-        "assets/Yokohama/posz.jpg",
-        "assets/Yokohama/negz.jpg",
-    ];
-    let images: Vec<_> = paths
-        .iter()
-        .map(|path| image::open(path).unwrap().to_rgba8())
-        .collect();
-
-    let dimensions = images[0].dimensions();
-    for image in &images {
-        if image.dimensions() != dimensions {
-            panic!();
-        }
-    }
-
-    let one_image_size = dimensions.0 * dimensions.1 * 4;
-    let staging_buffer = Buffer::new_slice(
-        mem_alloc.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        (one_image_size * 6) as DeviceSize,
-    )
-    .unwrap();
-
-    let mut write = staging_buffer.write().unwrap();
-    for (i, image) in images.iter().enumerate() {
-        write[(i * one_image_size as usize)..((i + 1) * one_image_size as usize)]
-            .copy_from_slice(image.as_bytes());
-    }
-    drop(write);
-
-    let image = Image::new(
-        mem_alloc,
-        ImageCreateInfo {
-            flags: ImageCreateFlags::CUBE_COMPATIBLE,
-            usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-            image_type: ImageType::Dim2d,
-            array_layers: 6,
-            extent: [dimensions.0, dimensions.1, 1],
-            format: Format::R8G8B8A8_SRGB,
-            ..Default::default()
-        },
-        AllocationCreateInfo::default(),
-    )
-    .unwrap();
-
-    builder
-        .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-            staging_buffer,
-            image.clone(),
-        ))
-        .unwrap();
-
-    image
-}
-
 fn load_skybox<L>(
     allocator: Arc<StandardMemoryAllocator>,
     path: impl AsRef<Path>,
@@ -397,6 +385,11 @@ fn load_skybox<L>(
     // let image = image_reader.decode().unwrap().to_rgba32f();
 
     let image = image::open(path).unwrap().to_rgba32f();
+    assert_eq!(
+        image.width() / 2,
+        image.height(),
+        "equirectangular image must be 2:1"
+    );
 
     let stage_buffer = Buffer::new_slice(
         allocator.clone(),

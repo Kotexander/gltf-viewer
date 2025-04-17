@@ -155,7 +155,8 @@ impl ApplicationHandler for App {
             &self.context,
             &Default::default(),
             |swapchain_info| {
-                swapchain_info.image_format = Format::R8G8B8A8_SRGB;
+                swapchain_info.image_format = Format::B8G8R8A8_SRGB;
+                // swapchain_info.image_format = Format::R8G8B8A8_SRGB;
                 swapchain_info.image_usage |= ImageUsage::TRANSFER_DST;
                 // swapchain_info.min_image_count += 1;
                 // swapchain_info.present_mode = vulkano::swapchain::PresentMode::Mailbox;
@@ -165,7 +166,7 @@ impl ApplicationHandler for App {
 
         let frame_info = FrameInfo::new(
             self.allocators.mem.clone(),
-            renderer.swapchain_image_views().to_vec(),
+            renderer.swapchain_image_views(),
         );
 
         let gui = Gui::new_with_subpass(
@@ -292,7 +293,7 @@ impl ApplicationHandler for App {
                 });
 
                 match renderer.acquire(None, |views| {
-                    window.frame_info.recreate(views.to_vec());
+                    window.frame_info.recreate(views);
                 }) {
                     Ok(mut before_future) => {
                         if let Some(cb) = window.triangle.update_gltf() {
