@@ -2,7 +2,7 @@ use crate::{
     Allocators,
     cubemap::{
         CubeMesh, CubemapPipelineLayout, CubemapShaders,
-        renderer::{EquiRenderPass, EquiRendererPipeline},
+        renderer::{CubeRenderPass, CubeRendererPipeline},
     },
     viewer::{GltfPipeline, GltfRenderInfo},
 };
@@ -107,7 +107,8 @@ pub struct Renderer {
     pub gltf_pipeline: GltfPipeline,
     pub gltf_info: Option<GltfRenderInfo>,
 
-    pub equi_renderer: EquiRendererPipeline,
+    pub equi_renderer: CubeRendererPipeline,
+    pub conv_renderer: CubeRendererPipeline,
     pub cube: CubeMesh,
 }
 impl Renderer {
@@ -141,20 +142,30 @@ impl Renderer {
 
         let cube = CubeMesh::new(allocators.mem.clone(), builder);
 
-        let equi_render_pass = EquiRenderPass::new(
+        let cube_render_pass = CubeRenderPass::new(
             device.clone(),
             allocators.mem.clone(),
             allocators.set.clone(),
             set_layouts.camera.clone(),
         );
-        let equi_renderer = EquiRendererPipeline {
+        let equi_renderer = CubeRendererPipeline {
             pipeline: cubemap_pipeline_layout.clone().create_pipeline(
                 cubemap_shaders.vs.clone(),
                 cubemap_shaders.equi_fs.clone(),
                 cubemap_shaders.vertex_input_state.clone(),
-                equi_render_pass.subpass.clone(),
+                cube_render_pass.subpass.clone(),
             ),
-            renderer: equi_render_pass,
+            renderer: cube_render_pass.clone(),
+            cube: cube.clone(),
+        };
+        let conv_renderer = CubeRendererPipeline {
+            pipeline: cubemap_pipeline_layout.clone().create_pipeline(
+                cubemap_shaders.vs.clone(),
+                cubemap_shaders.conv_fs.clone(),
+                cubemap_shaders.vertex_input_state.clone(),
+                cube_render_pass.subpass.clone(),
+            ),
+            renderer: cube_render_pass,
             cube: cube.clone(),
         };
         let equi_pipeline = cubemap_pipeline_layout.clone().create_pipeline(
@@ -175,6 +186,7 @@ impl Renderer {
             set_layouts,
             equi_renderer,
             equi_pipeline,
+            conv_renderer,
         }
     }
     pub fn render<L>(self, builder: &mut AutoCommandBufferBuilder<L>) {

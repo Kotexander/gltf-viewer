@@ -12,7 +12,10 @@ use vulkano::{
     },
     device::Device,
     format::Format,
-    image::{Image, ImageCreateFlags, ImageCreateInfo, ImageType, ImageUsage, view::ImageView},
+    image::{
+        Image, ImageCreateFlags, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage,
+        view::{ImageView, ImageViewCreateInfo, ImageViewType},
+    },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{
         GraphicsPipeline, Pipeline, PipelineBindPoint,
@@ -22,11 +25,11 @@ use vulkano::{
 };
 
 #[derive(Clone)]
-pub struct EquiRenderPass {
+pub struct CubeRenderPass {
     pub subpass: Subpass,
     pub cameras: Vec<Arc<DescriptorSet>>,
 }
-impl EquiRenderPass {
+impl CubeRenderPass {
     pub fn new(
         device: Arc<Device>,
         mem_allocator: Arc<StandardMemoryAllocator>,
@@ -95,19 +98,19 @@ impl EquiRenderPass {
 }
 
 #[derive(Clone)]
-pub struct EquiRendererPipeline {
+pub struct CubeRendererPipeline {
     pub pipeline: Arc<GraphicsPipeline>,
-    pub renderer: EquiRenderPass,
+    pub renderer: CubeRenderPass,
     pub cube: CubeMesh,
 }
-impl EquiRendererPipeline {
+impl CubeRendererPipeline {
     pub fn render<L>(
         &self,
         builder: &mut AutoCommandBufferBuilder<L>,
         equi_set: &Arc<DescriptorSet>,
-        views: &[Arc<ImageView>],
+        image: &Arc<Image>,
     ) {
-        let extent = views[0].image().extent();
+        let extent = image.extent();
         builder
             .set_viewport(
                 0,
@@ -128,7 +131,24 @@ impl EquiRendererPipeline {
             )
             .unwrap();
 
-        for (view, cam_set) in views.iter().zip(self.renderer.cameras.iter()) {
+        let views = (0u32..6u32).into_iter().map(|i| {
+            ImageView::new(
+                image.clone(),
+                ImageViewCreateInfo {
+                    view_type: ImageViewType::Dim2d,
+                    format: image.format(),
+                    subresource_range: ImageSubresourceRange {
+                        aspects: image.format().aspects(),
+                        mip_levels: 0..1,
+                        array_layers: i..i + 1,
+                    },
+                    ..Default::default()
+                },
+            )
+            .unwrap()
+        });
+
+        for (view, cam_set) in views.zip(self.renderer.cameras.iter()) {
             let framebuffer = Framebuffer::new(
                 self.renderer.subpass.render_pass().clone(),
                 FramebufferCreateInfo {

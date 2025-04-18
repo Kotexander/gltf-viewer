@@ -32,6 +32,7 @@ pub struct CubemapShaders {
     pub vertex_input_state: VertexInputState,
     pub equi_fs: EntryPoint,
     pub cube_fs: EntryPoint,
+    pub conv_fs: EntryPoint,
 }
 impl CubemapShaders {
     pub fn new(device: Arc<Device>) -> Self {
@@ -45,13 +46,18 @@ impl CubemapShaders {
             .unwrap()
             .entry_point("main")
             .unwrap();
-        let equi_fs = equi_fs::load(device).unwrap().entry_point("main").unwrap();
+        let equi_fs = equi_fs::load(device.clone())
+            .unwrap()
+            .entry_point("main")
+            .unwrap();
+        let conv_fs = conv_fs::load(device).unwrap().entry_point("main").unwrap();
 
         Self {
             vs,
             vertex_input_state,
             equi_fs,
             cube_fs,
+            conv_fs,
         }
     }
 }
@@ -174,12 +180,12 @@ mod cube_fs {
 #version 450
 
 layout(location = 0) in vec3 v_position;
-layout(set = 1, binding = 0) uniform samplerCube texSampler;
+layout(set = 1, binding = 0) uniform samplerCube cubemap;
 
 layout(location = 0) out vec4 f_color;
 
 void main() {
-    f_color = texture(texSampler, v_position);
+    f_color = texture(cubemap, v_position);
 }
         "#
     }
@@ -191,7 +197,7 @@ mod equi_fs {
 #version 450
 
 layout(location = 0) in vec3 v_pos;
-layout(set = 1, binding = 0) uniform sampler2D texSampler;
+layout(set = 1, binding = 0) uniform sampler2D equiTex;
 
 layout(location = 0) out vec4 f_color;
 
@@ -208,11 +214,53 @@ vec2 sampleSphericalMap(vec3 dir) {
 void main() {
     vec3 dir = normalize(v_pos);
     vec2 uv = sampleSphericalMap(dir);
-    vec4 color = texture(texSampler, uv);
+    vec4 color = texture(equiTex, uv);
     // f_color = color / (color + 1);
 
     // f_color = vec4(pow(color.rgb, vec3(1.0/2.2)), color.a);
     f_color = color;
+}
+        "#
+    }
+}
+mod conv_fs {
+    vulkano_shaders::shader! {
+        ty: "fragment",
+        src: r#"
+#version 450
+
+layout(location = 0) in vec3 v_position;
+layout(set = 1, binding = 0) uniform samplerCube envMap;
+
+layout(location = 0) out vec4 f_color;
+
+const float PI = 3.14159265358979323846264338327950288;
+
+void main() {
+    vec3 N = normalize(v_position);
+    vec3 irradiance = vec3(0.0);
+
+    vec3 up    = vec3(0.0, 1.0, 0.0);
+    vec3 right = normalize(cross(up, N));
+    up         = normalize(cross(N, right));
+
+    float samples = 0.0;
+    for(float phi = 0.0; phi < 2.0 * PI; phi += 0.01){
+        float cos_phi = cos(phi);
+        float sin_phi = sin(phi);
+
+        for(float theta = 0.0; theta < 0.5 * PI; theta += 0.01){
+            float cos_theta = cos(theta);
+            float sin_theta = sin(theta);
+
+            vec3 temp = cos_phi * right + sin_phi * up;
+            vec3 sample_dir = cos_theta * N + sin_theta * temp;
+            irradiance += texture(envMap, sample_dir).rgb * cos_theta * sin_theta;
+            samples += 1.0;
+        }
+    }
+    irradiance = PI * irradiance / samples;
+    f_color = vec4(irradiance, 1.0);
 }
         "#
     }

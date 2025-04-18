@@ -24,7 +24,7 @@ use vulkano::{
     device::{DeviceOwned, Queue},
     format::Format,
     image::{
-        Image, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage,
+        Image, ImageCreateInfo, ImageType, ImageUsage,
         sampler::{Sampler, SamplerCreateInfo},
         view::{ImageView, ImageViewCreateInfo, ImageViewType},
     },
@@ -156,11 +156,12 @@ impl Triangle {
             return;
         }
         let allocators = self.allocators.clone();
-        let renderer = self.renderer.equi_renderer.clone();
+        let equi_renderer = self.renderer.equi_renderer.clone();
+        let conv_renderer = self.renderer.conv_renderer.clone();
         let texture_layout = self.renderer.set_layouts.texture.clone();
         let job = std::thread::spawn(move || {
             let mut builder = AutoCommandBufferBuilder::primary(
-                allocators.cmd,
+                allocators.cmd.clone(),
                 queue.queue_family_index(),
                 CommandBufferUsage::OneTimeSubmit,
             )
@@ -185,27 +186,7 @@ impl Triangle {
             .unwrap();
 
             let cube = create_cubemap_image(allocators.mem.clone(), equi.extent()[1]);
-            let views: Vec<_> = (0u32..6u32)
-                .into_iter()
-                .map(|i| {
-                    ImageView::new(
-                        cube.clone(),
-                        ImageViewCreateInfo {
-                            view_type: ImageViewType::Dim2d,
-                            format: cube.format(),
-                            subresource_range: ImageSubresourceRange {
-                                aspects: cube.format().aspects(),
-                                mip_levels: 0..1,
-                                array_layers: i..i + 1,
-                            },
-                            ..Default::default()
-                        },
-                    )
-                    .unwrap()
-                })
-                .collect();
-
-            renderer.render(&mut builder, &equi_set, &views);
+            equi_renderer.render(&mut builder, &equi_set, &cube);
 
             let cube_view = ImageView::new(
                 cube.clone(),
@@ -231,8 +212,35 @@ impl Triangle {
             )
             .unwrap();
 
+            let conv = create_cubemap_image(allocators.mem.clone(), 32);
+            conv_renderer.render(&mut builder, &cube_set, &conv);
+
+            let conv_view = ImageView::new(
+                conv.clone(),
+                ImageViewCreateInfo {
+                    view_type: ImageViewType::Cube,
+                    ..ImageViewCreateInfo::from_image(&conv)
+                },
+            )
+            .unwrap();
+            let conv_set = DescriptorSet::new(
+                allocators.set.clone(),
+                texture_layout.clone(),
+                [WriteDescriptorSet::image_view_sampler(
+                    0,
+                    conv_view,
+                    Sampler::new(
+                        allocators.mem.device().clone(),
+                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+                    )
+                    .unwrap(),
+                )],
+                [],
+            )
+            .unwrap();
+
             let cb = builder.build().unwrap();
-            ((equi_set, cube_set), cb)
+            ((equi_set, conv_set), cb)
         });
         self.skybox_job = Some(job);
     }
