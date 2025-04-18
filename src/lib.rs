@@ -29,7 +29,7 @@ use vulkano::{
         view::{ImageView, ImageViewCreateInfo, ImageViewType},
     },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::PipelineBindPoint,
+    pipeline::{Pipeline, PipelineBindPoint},
     render_pass::Subpass,
     sync::GpuFuture,
 };
@@ -240,7 +240,7 @@ impl Triangle {
             .unwrap();
 
             let cb = builder.build().unwrap();
-            ((equi_set, conv_set), cb)
+            ((cube_set, conv_set), cb)
         });
         self.skybox_job = Some(job);
     }
@@ -263,10 +263,11 @@ impl Triangle {
             .as_ref()
             .is_some_and(|job| job.is_finished())
         {
-            let ((equi, cube), cb) = self.skybox_job.take().unwrap().join().unwrap();
+            let ((cube, conv), cb) = self.skybox_job.take().unwrap().join().unwrap();
 
-            self.renderer.equi_set = Some(equi);
             self.renderer.cube_set = Some(cube);
+            // self.renderer.cube_set = Some(conv.clone());
+            self.renderer.conv_set = conv;
 
             Some(cb)
         } else {
@@ -316,23 +317,9 @@ impl Triangle {
                     .prefix("z: ")
                     .speed(0.1),
             );
-        });
-
-        ui.collapsing("Skybox", |ui| {
-            ui.horizontal(|ui| {
-                if ui
-                    .selectable_label(!self.renderer.cube_mode, "Equirectangular")
-                    .clicked()
-                {
-                    self.renderer.cube_mode = false;
-                }
-                if ui
-                    .selectable_label(self.renderer.cube_mode, "Cubemap")
-                    .clicked()
-                {
-                    self.renderer.cube_mode = true;
-                }
-            })
+            if ui.button("Center").clicked() {
+                self.camera.target = glm::Vec3::zeros();
+            }
         });
     }
     pub fn ui(&mut self, ctx: &egui::Context) {
@@ -341,11 +328,24 @@ impl Triangle {
             .show(ctx, |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
+                let modifiers = response.ctx.input(|i| i.modifiers);
 
-                let drag_delta = response.drag_motion() * 0.005;
-                self.camera.pitch += drag_delta.y;
-                self.camera.yaw -= drag_delta.x;
-                self.camera.wrap();
+                // pan
+                if modifiers.shift {
+                    let cam = self.camera.look_at().try_inverse().unwrap();
+                    let right = cam.transform_vector(&glm::Vec3::x());
+                    let up = cam.transform_vector(&glm::Vec3::y());
+                    let delta = response.drag_motion() * 0.002 * self.camera.zoom;
+                    self.camera.target -= right * delta.x;
+                    self.camera.target -= up * delta.y;
+                }
+                // rotate
+                else {
+                    let drag_delta = response.drag_motion() * 0.005;
+                    self.camera.yaw -= drag_delta.x;
+                    self.camera.pitch += drag_delta.y;
+                    self.camera.wrap();
+                }
 
                 let smooth_scroll = response.ctx.input(|i| i.smooth_scroll_delta);
                 self.camera.zoom += self.camera.zoom * -smooth_scroll.y * 0.003;
@@ -367,7 +367,7 @@ impl Triangle {
                             .builder
                             .bind_descriptor_sets(
                                 PipelineBindPoint::Graphics,
-                                renderer.gltf_pipeline.layout().clone(),
+                                renderer.gltf_pipeline.pipeline.layout().clone(),
                                 0,
                                 camera_set.clone(),
                             )

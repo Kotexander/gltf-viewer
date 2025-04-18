@@ -133,7 +133,7 @@ impl GltfRenderInfoBuilder {
 
 #[derive(Clone)]
 pub struct GltfPipeline {
-    pipeline: Arc<GraphicsPipeline>,
+    pub pipeline: Arc<GraphicsPipeline>,
 }
 impl GltfPipeline {
     pub fn new(
@@ -213,9 +213,6 @@ impl GltfPipeline {
                 primitive.render(layout.clone(), mesh.len, builder);
             }
         }
-    }
-    pub fn layout(&self) -> &Arc<PipelineLayout> {
-        self.pipeline.layout()
     }
 }
 

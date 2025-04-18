@@ -16,17 +16,19 @@ layout(set = 0, binding = 0) uniform Camera {
     mat4 view_inv;
 } cam;
 
-layout(set = 1, binding = 0) uniform Factors {
+layout(set = 1, binding = 0) uniform samplerCube envMap;
+
+layout(set = 2, binding = 0) uniform Factors {
     vec4 bc;
     vec3 em;
     float ao;
     vec2 rm;
 } f;
-layout(set = 1, binding = 1) uniform sampler2D bc_sampler;
-layout(set = 1, binding = 2) uniform sampler2D rm_sampler;
-layout(set = 1, binding = 3) uniform sampler2D ao_sampler;
-layout(set = 1, binding = 4) uniform sampler2D em_sampler;
-layout(set = 1, binding = 5) uniform sampler2D nm_sampler;
+layout(set = 2, binding = 1) uniform sampler2D bc_sampler;
+layout(set = 2, binding = 2) uniform sampler2D rm_sampler;
+layout(set = 2, binding = 3) uniform sampler2D ao_sampler;
+layout(set = 2, binding = 4) uniform sampler2D em_sampler;
+layout(set = 2, binding = 5) uniform sampler2D nm_sampler;
 
 const float PI = 3.14159265358979323846264338327950288;
 
@@ -109,31 +111,31 @@ void main() {
     float n_dot_v = max(dot(N, V), 0.0000001);
 
     vec3 Lo = vec3(0.0);
-    for (int i = 0; i < 2; i++) {
-        vec3 L = normalize(lights[i]);
-        vec3 H = normalize(L + V);
+    // for (int i = 0; i < 2; i++) {
+    //     vec3 L = normalize(lights[i]);
+    //     vec3 H = normalize(L + V);
 
-        float n_dot_l = max(dot(N, L), 0.0000001);
-        float n_dot_h = max(dot(N, H), 0.0);
-        float h_dot_v = max(dot(H, V), 0.0);
+    //     float n_dot_l = max(dot(N, L), 0.0000001);
+    //     float n_dot_h = max(dot(N, H), 0.0);
+    //     float h_dot_v = max(dot(H, V), 0.0);
 
-        float d = distribution_ggx(n_dot_h, rm.x);
-        float g = geometry_smith(n_dot_v, n_dot_l, rm.x);
-        vec3 f = fresnel_shlick(h_dot_v, f0);
+    //     float d = distribution_ggx(n_dot_h, rm.x);
+    //     float g = geometry_smith(n_dot_v, n_dot_l, rm.x);
+    //     vec3 f = fresnel_shlick(h_dot_v, f0);
 
-        vec3 specular_num = d * g * f;
-        float specular_denum = 4.0 * n_dot_v * n_dot_l;
-        vec3 specular = specular_num / specular_denum;
+    //     vec3 specular_num = d * g * f;
+    //     float specular_denum = 4.0 * n_dot_v * n_dot_l;
+    //     vec3 specular = specular_num / specular_denum;
 
-        vec3 kd = vec3(1.0) - f;
-        kd *= 1.0 - rm.y;
+    //     vec3 kd = vec3(1.0) - f;
+    //     kd *= 1.0 - rm.y;
 
-        vec3 lambert = albedo / PI;
-        vec3 brdf = kd * lambert + specular;
-        Lo += brdf * vec3(1.0) * n_dot_l;
-    }
+    //     vec3 lambert = albedo / PI;
+    //     vec3 brdf = kd * lambert + specular;
+    //     Lo += brdf * vec3(1.0) * n_dot_l;
+    // }
 
-    vec3 ambient = vec3(0.0) * albedo * ao;
+    vec3 ambient = texture(envMap, vec3(-N.x, N.y, N.z)).rgb * albedo * ao;
     vec3 color = Lo + ambient + em;
     // vec3 tone_map = color / (color + vec3(1.0));
     // f_color = vec4(tone_map, 1.0);

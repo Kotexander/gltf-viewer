@@ -165,7 +165,7 @@ impl Primitive {
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
                 pipeline_layout,
-                1,
+                2,
                 self.material_set,
             )
             .unwrap();

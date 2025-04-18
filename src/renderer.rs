@@ -10,13 +10,20 @@ use std::{collections::BTreeMap, sync::Arc};
 use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, PrimaryAutoCommandBuffer},
     descriptor_set::{
-        DescriptorSet,
+        DescriptorSet, WriteDescriptorSet,
         layout::{
             DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateInfo,
             DescriptorType,
         },
     },
     device::{Device, DeviceOwned},
+    format::Format,
+    image::{
+        Image, ImageCreateFlags, ImageCreateInfo, ImageUsage,
+        sampler::{Sampler, SamplerCreateInfo},
+        view::{ImageView, ImageViewCreateInfo, ImageViewType},
+    },
+    memory::allocator::AllocationCreateInfo,
     pipeline::{GraphicsPipeline, Pipeline, PipelineBindPoint},
     render_pass::Subpass,
     shader::ShaderStages,
@@ -98,11 +105,9 @@ impl SetLayouts {
 pub struct Renderer {
     pub set_layouts: SetLayouts,
     pub skybox_pipeline: Arc<GraphicsPipeline>,
-    pub equi_pipeline: Arc<GraphicsPipeline>,
 
-    pub equi_set: Option<Arc<DescriptorSet>>,
     pub cube_set: Option<Arc<DescriptorSet>>,
-    pub cube_mode: bool,
+    pub conv_set: Arc<DescriptorSet>,
 
     pub gltf_pipeline: GltfPipeline,
     pub gltf_info: Option<GltfRenderInfo>,
@@ -136,7 +141,11 @@ impl Renderer {
 
         let gltf_pipeline = GltfPipeline::new(
             device.clone(),
-            vec![set_layouts.camera.clone(), set_layouts.material.clone()],
+            vec![
+                set_layouts.camera.clone(),
+                set_layouts.texture.clone(),
+                set_layouts.material.clone(),
+            ],
             subpass.clone(),
         );
 
@@ -151,7 +160,7 @@ impl Renderer {
         let equi_renderer = CubeRendererPipeline {
             pipeline: cubemap_pipeline_layout.clone().create_pipeline(
                 cubemap_shaders.vs.clone(),
-                cubemap_shaders.equi_fs.clone(),
+                cubemap_shaders.equi_fs,
                 cubemap_shaders.vertex_input_state.clone(),
                 cube_render_pass.subpass.clone(),
             ),
@@ -160,59 +169,76 @@ impl Renderer {
         };
         let conv_renderer = CubeRendererPipeline {
             pipeline: cubemap_pipeline_layout.clone().create_pipeline(
-                cubemap_shaders.vs.clone(),
-                cubemap_shaders.conv_fs.clone(),
-                cubemap_shaders.vertex_input_state.clone(),
+                cubemap_shaders.vs,
+                cubemap_shaders.conv_fs,
+                cubemap_shaders.vertex_input_state,
                 cube_render_pass.subpass.clone(),
             ),
             renderer: cube_render_pass,
             cube: cube.clone(),
         };
-        let equi_pipeline = cubemap_pipeline_layout.clone().create_pipeline(
-            cubemap_shaders.vs,
-            cubemap_shaders.equi_fs,
-            cubemap_shaders.vertex_input_state,
-            subpass.clone(),
-        );
+
+        let conv_image = Image::new(
+            allocators.mem.clone(),
+            ImageCreateInfo {
+                format: Format::R16G16B16A16_SFLOAT,
+                usage: ImageUsage::SAMPLED,
+                flags: ImageCreateFlags::CUBE_COMPATIBLE,
+                array_layers: 6,
+                extent: [1, 1, 1],
+                ..Default::default()
+            },
+            AllocationCreateInfo::default(),
+        )
+        .unwrap();
+        let conv_view = ImageView::new(
+            conv_image.clone(),
+            ImageViewCreateInfo {
+                view_type: ImageViewType::Cube,
+                ..ImageViewCreateInfo::from_image(&conv_image)
+            },
+        )
+        .unwrap();
+        let conv_set = DescriptorSet::new(
+            allocators.set,
+            set_layouts.texture.clone(),
+            [WriteDescriptorSet::image_view_sampler(
+                0,
+                conv_view,
+                Sampler::new(device.clone(), SamplerCreateInfo::simple_repeat_linear()).unwrap(),
+            )],
+            [],
+        )
+        .unwrap();
 
         Self {
             skybox_pipeline,
-            equi_set: None,
             cube_set: None,
-            cube_mode: false,
             gltf_pipeline,
             gltf_info: None,
             cube,
             set_layouts,
             equi_renderer,
-            equi_pipeline,
             conv_renderer,
+            conv_set,
         }
     }
     pub fn render<L>(self, builder: &mut AutoCommandBufferBuilder<L>) {
         if let Some(gltf_info) = self.gltf_info {
+            let layout = self.gltf_pipeline.pipeline.layout().clone();
+            builder
+                .bind_descriptor_sets(PipelineBindPoint::Graphics, layout, 1, self.conv_set)
+                .unwrap();
             self.gltf_pipeline.render(gltf_info, builder);
         }
-        if self.cube_mode {
-            if let Some(cube) = self.cube_set {
-                let layout = self.skybox_pipeline.layout().clone();
-                builder
-                    .bind_pipeline_graphics(self.skybox_pipeline)
-                    .unwrap()
-                    .bind_descriptor_sets(PipelineBindPoint::Graphics, layout, 1, cube)
-                    .unwrap();
-                self.cube.render(builder);
-            }
-        } else {
-            if let Some(equi) = self.equi_set {
-                let layout = self.equi_pipeline.layout().clone();
-                builder
-                    .bind_pipeline_graphics(self.equi_pipeline)
-                    .unwrap()
-                    .bind_descriptor_sets(PipelineBindPoint::Graphics, layout, 1, equi)
-                    .unwrap();
-                self.cube.render(builder);
-            }
+        if let Some(cube) = self.cube_set {
+            let layout = self.skybox_pipeline.layout().clone();
+            builder
+                .bind_pipeline_graphics(self.skybox_pipeline)
+                .unwrap()
+                .bind_descriptor_sets(PipelineBindPoint::Graphics, layout, 1, cube)
+                .unwrap();
+            self.cube.render(builder);
         }
     }
 }
