@@ -1,8 +1,7 @@
-use egui_file::FileDialog;
 use egui_winit_vulkano::{Gui, GuiConfig};
 use frameinfo::FrameInfo;
-use gltf_viewer::{Allocators, Triangle};
-use std::{ffi::OsStr, sync::Arc};
+use gltf_viewer::{Allocators, State};
+use std::sync::Arc;
 use vulkano::{
     command_buffer::{
         AutoCommandBufferBuilder, CommandBufferUsage, SubpassBeginInfo, SubpassContents,
@@ -71,10 +70,15 @@ fn debug_info() -> DebugUtilsMessengerCreateInfo {
 
 struct Window {
     gui: Gui,
-    triangle: Triangle,
     frame_info: FrameInfo,
-    gltf_picker: FileDialog,
-    skybox_picker: FileDialog,
+    state: State,
+    frame: usize,
+    num_frames: usize,
+}
+impl Window {
+    pub fn frame_index(&self) -> usize {
+        self.frame % self.num_frames
+    }
 }
 
 struct App {
@@ -121,7 +125,7 @@ impl App {
 
         let windows = VulkanoWindows::default();
 
-        let cmd_buf_alloc = Arc::new(StandardCommandBufferAllocator::new(
+        let cmd_allocator = Arc::new(StandardCommandBufferAllocator::new(
             context.device().clone(),
             StandardCommandBufferAllocatorCreateInfo {
                 primary_buffer_count: 16,
@@ -129,15 +133,15 @@ impl App {
                 ..Default::default()
             },
         ));
-        let set_alloc = Arc::new(StandardDescriptorSetAllocator::new(
+        let set_allocator = Arc::new(StandardDescriptorSetAllocator::new(
             context.device().clone(),
             Default::default(),
         ));
 
         let allocators = Allocators {
-            cmd: cmd_buf_alloc,
+            cmd: cmd_allocator,
             mem: context.memory_allocator().clone(),
-            set: set_alloc,
+            set: set_allocator,
         };
 
         Self {
@@ -158,7 +162,7 @@ impl ApplicationHandler for App {
                 swapchain_info.image_format = Format::B8G8R8A8_SRGB;
                 // swapchain_info.image_format = Format::B8G8R8A8_UNORM;
                 swapchain_info.image_usage |= ImageUsage::TRANSFER_DST;
-                // swapchain_info.min_image_count += 1;
+                swapchain_info.min_image_count += 1;
                 // swapchain_info.present_mode = vulkano::swapchain::PresentMode::Mailbox;
             },
         );
@@ -181,38 +185,21 @@ impl ApplicationHandler for App {
             },
         );
 
-        let triangle = Triangle::new(
-            self.allocators.clone(),
+        let num_frames = renderer.swapchain_image_views().len();
+
+        let state = State::new(
+            &self.allocators,
             self.context.graphics_queue().clone(),
+            num_frames,
             frame_info.subpass().clone(),
         );
-        let mut gltf_picker =
-            FileDialog::open_file(Some(std::env::current_dir().unwrap_or(".".into())))
-                .id("Gltf")
-                .show_new_folder(false)
-                .show_rename(false)
-                .multi_select(false)
-                .show_files_filter(Box::new({
-                    let patterns = [OsStr::new("glb"), OsStr::new("gltf")];
-                    move |path| path.extension().is_some_and(|ext| patterns.contains(&ext))
-                }));
-        gltf_picker.open();
-        let skybox_picker =
-            FileDialog::open_file(Some(std::env::current_dir().unwrap_or(".".into())))
-                .id("Skybox")
-                .show_new_folder(false)
-                .show_rename(false)
-                .multi_select(false)
-                .show_files_filter(Box::new({
-                    let patterns = [OsStr::new("hdr"), OsStr::new("exr")];
-                    move |path| path.extension().is_some_and(|ext| patterns.contains(&ext))
-                }));
+
         self.window = Some(Window {
             gui,
-            triangle,
             frame_info,
-            gltf_picker,
-            skybox_picker,
+            state,
+            frame: 0,
+            num_frames,
         });
     }
 
@@ -237,84 +224,25 @@ impl ApplicationHandler for App {
                 renderer.resize();
             }
             WindowEvent::RedrawRequested => {
+                let frame_index = window.frame_index();
+                window.frame += 1;
+
                 window.gui.immediate_ui(|gui| {
-                    let ctx = gui.context();
-                    egui::SidePanel::right("Right").show(&ctx, |ui| {
-                        ui.heading("Settings");
-
-                        ui.separator();
-
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(
-                                    !window.triangle.loading_gltf(),
-                                    egui::Button::new("Open glTF"),
-                                )
-                                .clicked()
-                            {
-                                window.gltf_picker.open();
-                            }
-                            if window.triangle.loading_gltf() {
-                                ui.spinner();
-                            }
-                        });
-                        ui.horizontal(|ui| {
-                            if ui
-                                .add_enabled(
-                                    !window.triangle.loading_skybox(),
-                                    egui::Button::new("Open Skybox"),
-                                )
-                                .clicked()
-                            {
-                                window.skybox_picker.open();
-                            }
-                            if window.triangle.loading_skybox() {
-                                ui.spinner();
-                            }
-                        });
-
-                        ui.separator();
-
-                        window.triangle.side(ui);
-                    });
-                    if window.gltf_picker.show(&ctx).selected() {
-                        window.triangle.load_gltf(
-                            window.gltf_picker.path().unwrap().into(),
-                            self.context.graphics_queue().clone(),
-                        );
-                    }
-                    if window.skybox_picker.show(&ctx).selected() {
-                        window.triangle.load_skybox(
-                            window.skybox_picker.path().unwrap().into(),
-                            self.context.graphics_queue().clone(),
-                        );
-                    }
-                    window.triangle.ui(&ctx);
+                    window.state.show(&gui.egui_ctx, frame_index);
                 });
 
                 match renderer.acquire(None, |views| {
                     window.frame_info.recreate(views);
                 }) {
-                    Ok(mut before_future) => {
-                        if let Some(cb) = window.triangle.update_gltf() {
-                            before_future = before_future
-                                .then_execute(self.context.graphics_queue().clone(), cb)
-                                .unwrap()
-                                .boxed();
-                        }
-                        if let Some(cb) = window.triangle.update_skybox() {
-                            before_future = before_future
-                                .then_execute(self.context.graphics_queue().clone(), cb)
-                                .unwrap()
-                                .boxed();
-                        }
-
+                    Ok(before_future) => {
                         let mut builder = AutoCommandBufferBuilder::primary(
                             self.allocators.cmd.clone(),
                             renderer.graphics_queue().queue_family_index(),
                             CommandBufferUsage::OneTimeSubmit,
                         )
                         .unwrap();
+
+                        window.state.update(&mut builder, frame_index);
 
                         builder
                             .begin_render_pass(
@@ -338,7 +266,7 @@ impl ApplicationHandler for App {
                             .then_execute(renderer.graphics_queue(), command_buffer)
                             .unwrap();
 
-                        renderer.present(after_future.boxed(), true);
+                        renderer.present(after_future.boxed(), false);
                     }
                     Err(vulkano::VulkanError::OutOfDate) => {
                         renderer.resize();

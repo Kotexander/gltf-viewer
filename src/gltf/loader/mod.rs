@@ -23,10 +23,10 @@ mod material;
 pub mod mesh;
 mod texture;
 
-pub struct Loader {
+pub struct Loader<'a> {
     allocators: Allocators,
     material_set_layout: Arc<DescriptorSetLayout>,
-    builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+    builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
 
     images: Vec<Option<(Arc<ImageView>, bool)>>,
     textures: Vec<Option<Texture>>,
@@ -35,11 +35,11 @@ pub struct Loader {
 
     default_texture: Option<Texture>,
 }
-impl Loader {
+impl<'a> Loader<'a> {
     fn new(
         allocators: Allocators,
         material_set_layout: Arc<DescriptorSetLayout>,
-        builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        builder: &'a mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         document: &gltf::Document,
     ) -> Self {
         Self {
@@ -150,7 +150,7 @@ impl Loader {
         if img.is_none() {
             let img = load_image(
                 self.allocators.mem.clone(),
-                &mut self.builder,
+                self.builder,
                 images[i].take().unwrap(),
                 is_srgb,
             );
@@ -212,7 +212,6 @@ impl Loader {
 }
 
 pub struct GltfLoader {
-    pub builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     pub meshes: Vec<Option<Mesh>>,
     pub document: gltf::Document,
 }
@@ -220,7 +219,7 @@ impl GltfLoader {
     pub fn new(
         allocators: Allocators,
         material_set_layout: Arc<DescriptorSetLayout>,
-        builder: AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
         path: impl AsRef<Path>,
     ) -> gltf::Result<Self> {
         let (document, buffers, images) = gltf::import(path)?;
@@ -233,7 +232,6 @@ impl GltfLoader {
         loader.load_scene(document.default_scene().unwrap(), &buffers, &mut images);
 
         Ok(Self {
-            builder: loader.builder,
             meshes: loader.meshes,
             document,
         })

@@ -6,9 +6,10 @@ use std::f32::consts::TAU;
 #[derive(Debug, Clone, Copy)]
 pub struct OrbitCamera {
     pub target: glm::Vec3,
+    pub zoom: f32,
+
     pub pitch: f32,
     pub yaw: f32,
-    pub zoom: f32,
 
     pub fov: f32,
     pub near: f32,
@@ -58,5 +59,61 @@ impl Default for OrbitCamera {
             near: 0.1,
             far: 100.0,
         }
+    }
+}
+impl OrbitCamera {
+    pub fn ui(&mut self, ui: &mut egui::Ui) {
+        ui.label("Target");
+        ui.add(
+            egui::DragValue::new(&mut self.target.x)
+                .prefix("x: ")
+                .speed(0.1),
+        );
+        ui.add(
+            egui::DragValue::new(&mut self.target.y)
+                .prefix("y: ")
+                .speed(0.1),
+        );
+        ui.add(
+            egui::DragValue::new(&mut self.target.z)
+                .prefix("z: ")
+                .speed(0.1),
+        );
+        if ui.button("Center").clicked() {
+            self.target = glm::Vec3::zeros();
+        }
+
+        ui.separator();
+
+        ui.label("Zoom");
+        ui.add(
+            egui::DragValue::new(&mut self.zoom)
+                .range(self.near..=f32::MAX)
+                .speed(0.1),
+        );
+
+        ui.separator();
+
+        ui.label("Pitch");
+        ui.drag_angle(&mut self.pitch);
+        ui.label("Yaw");
+        ui.drag_angle(&mut self.yaw);
+
+        ui.separator();
+
+        ui.label("Near");
+        let diff = 0.01;
+        let old_near = self.near;
+        ui.add(
+            egui::DragValue::new(&mut self.near)
+                .range(diff..=self.far - diff)
+                .speed(0.1),
+        );
+        ui.label("Far");
+        ui.add(
+            egui::DragValue::new(&mut self.far)
+                .range(old_near + diff..=f32::MAX)
+                .speed(0.1),
+        );
     }
 }

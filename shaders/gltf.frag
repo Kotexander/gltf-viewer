@@ -17,6 +17,7 @@ layout(set = 0, binding = 0) uniform Camera {
 } cam;
 
 layout(set = 1, binding = 0) uniform samplerCube envMap;
+// layout(set = 1, binding = 1) uniform samplerCube spcMap;
 
 layout(set = 2, binding = 0) uniform Factors {
     vec4 bc;
@@ -59,8 +60,8 @@ float geometry_smith(float n_dot_v, float n_dot_l, float roughness) {
     return ggx1 * ggx2;
 }
 
-vec3 fresnel_shlick(float cos_theta, vec3 f0) {
-    return f0 + (1.0 - f0) * pow(1.0 - cos_theta, 5.0);
+vec3 fresnel_shlick(float cos_theta, vec3 f0, float roughness) {
+    return f0 + ((1.0 - roughness) - f0) * pow(1.0 - cos_theta, 5.0);
 }
 
 vec3 pbr_neutral_tone_mapping(vec3 color) {
@@ -135,7 +136,12 @@ void main() {
     //     Lo += brdf * vec3(1.0) * n_dot_l;
     // }
 
-    vec3 ambient = texture(envMap, vec3(-N.x, N.y, N.z)).rgb * albedo * ao;
+    vec3 f = fresnel_shlick(n_dot_v, f0, rm.x);
+    vec3 kd = (vec3(1.0) - f) * (1.0 - rm.y);
+    vec3 diffuse = texture(envMap, vec3(-N.x, N.y, N.z)).rgb * albedo * kd;
+    // vec3 R = reflect(-V, N);
+    // vec3 specular = texture(spcMap, vec3(-R.x, R.y, R.z)).rgb * f;
+    vec3 ambient = (diffuse) * ao;
     vec3 color = Lo + ambient + em;
     // vec3 tone_map = color / (color + vec3(1.0));
     // f_color = vec4(tone_map, 1.0);

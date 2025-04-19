@@ -4,7 +4,7 @@ use nalgebra_glm as glm;
 use vulkano::{
     DeviceSize,
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
-    command_buffer::{AutoCommandBufferBuilder, CopyBufferInfoTyped, PrimaryAutoCommandBuffer},
+    command_buffer::{AutoCommandBufferBuilder, CopyBufferInfoTyped},
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::graphics::vertex_input::Vertex,
 };
@@ -62,9 +62,9 @@ pub struct CubeMesh {
     ilen: u32,
 }
 impl CubeMesh {
-    pub fn new(
+    pub fn new<L>(
         allocator: Arc<StandardMemoryAllocator>,
-        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
+        builder: &mut AutoCommandBufferBuilder<L>,
     ) -> Self {
         let vbuf_stage = Buffer::from_iter(
             allocator.clone(),
@@ -129,11 +129,11 @@ impl CubeMesh {
             ilen: INDICES.len() as u32,
         }
     }
-    pub fn render<L>(self, builder: &mut AutoCommandBufferBuilder<L>) {
+    pub fn render<L>(&self, builder: &mut AutoCommandBufferBuilder<L>) {
         builder
-            .bind_vertex_buffers(0, self.vbuf)
+            .bind_vertex_buffers(0, self.vbuf.clone())
             .unwrap()
-            .bind_index_buffer(self.ibuf)
+            .bind_index_buffer(self.ibuf.clone())
             .unwrap();
         unsafe { builder.draw_indexed(self.ilen, 1, 0, 0, 0) }.unwrap();
     }

@@ -10,7 +10,7 @@ use vulkano::{
         DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
         layout::DescriptorSetLayout,
     },
-    device::Device,
+    device::DeviceOwned,
     format::Format,
     image::{
         Image, ImageCreateFlags, ImageCreateInfo, ImageSubresourceRange, ImageType, ImageUsage,
@@ -24,20 +24,64 @@ use vulkano::{
     render_pass::{Framebuffer, FramebufferCreateInfo, Subpass},
 };
 
-#[derive(Clone)]
-pub struct CubeRenderPass {
+fn create_cubemap_cameras(
+    mem_allocator: Arc<StandardMemoryAllocator>,
+    set_allocator: Arc<StandardDescriptorSetAllocator>,
+    camera_set_layout: Arc<DescriptorSetLayout>,
+) -> Vec<Arc<DescriptorSet>> {
+    let proj = glm::perspective_lh_zo(1.0, std::f32::consts::FRAC_PI_2, 0.1, 10.0);
+    let eye = glm::Vec3::zeros();
+    #[rustfmt::skip]
+    let views = [
+        [glm::look_at_lh(&eye, &glm::vec3(-1.0,  0.0,  0.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
+        [glm::look_at_lh(&eye, &glm::vec3( 1.0,  0.0,  0.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
+        [glm::look_at_lh(&eye, &glm::vec3( 0.0,  1.0,  0.0), &glm::vec3(0.0,  0.0,  1.0)), proj],
+        [glm::look_at_lh(&eye, &glm::vec3( 0.0, -1.0,  0.0), &glm::vec3(0.0,  0.0, -1.0)), proj],
+        [glm::look_at_lh(&eye, &glm::vec3( 0.0,  0.0,  1.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
+        [glm::look_at_lh(&eye, &glm::vec3( 0.0,  0.0, -1.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
+    ];
+
+    views
+        .into_iter()
+        .map(|view| {
+            let buffer = Buffer::from_data(
+                mem_allocator.clone(),
+                BufferCreateInfo {
+                    usage: BufferUsage::UNIFORM_BUFFER,
+                    ..Default::default()
+                },
+                AllocationCreateInfo {
+                    memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+                        | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                    ..Default::default()
+                },
+                view,
+            )
+            .unwrap();
+            DescriptorSet::new(
+                set_allocator.clone(),
+                camera_set_layout.clone(),
+                [WriteDescriptorSet::buffer(0, buffer)],
+                [],
+            )
+            .unwrap()
+        })
+        .collect()
+}
+
+pub struct CubemapRenderPass {
     pub subpass: Subpass,
     pub cameras: Vec<Arc<DescriptorSet>>,
 }
-impl CubeRenderPass {
+impl CubemapRenderPass {
     pub fn new(
-        device: Arc<Device>,
         mem_allocator: Arc<StandardMemoryAllocator>,
         set_allocator: Arc<StandardDescriptorSetAllocator>,
         camera_set_layout: Arc<DescriptorSetLayout>,
     ) -> Self {
+        let device = mem_allocator.device();
         let render_pass = vulkano::single_pass_renderpass!(
-            device,
+            device.clone(),
             attachments: {
                 color: {
                     format: Format::R16G16B16A16_SFLOAT,
@@ -54,56 +98,19 @@ impl CubeRenderPass {
         .unwrap();
         let subpass = Subpass::from(render_pass.clone(), 0).unwrap();
 
-        let proj = glm::perspective_lh_zo(1.0, std::f32::consts::FRAC_PI_2, 0.1, 10.0);
-        let eye = glm::Vec3::zeros();
-        #[rustfmt::skip]
-        let views = [
-            [glm::look_at_lh(&eye, &glm::vec3(-1.0,  0.0,  0.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
-            [glm::look_at_lh(&eye, &glm::vec3( 1.0,  0.0,  0.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
-            [glm::look_at_lh(&eye, &glm::vec3( 0.0,  1.0,  0.0), &glm::vec3(0.0,  0.0,  1.0)), proj],
-            [glm::look_at_lh(&eye, &glm::vec3( 0.0, -1.0,  0.0), &glm::vec3(0.0,  0.0, -1.0)), proj],
-            [glm::look_at_lh(&eye, &glm::vec3( 0.0,  0.0,  1.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
-            [glm::look_at_lh(&eye, &glm::vec3( 0.0,  0.0, -1.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
-        ];
-
-        let cameras = views
-            .into_iter()
-            .map(|view| {
-                let buffer = Buffer::from_data(
-                    mem_allocator.clone(),
-                    BufferCreateInfo {
-                        usage: BufferUsage::UNIFORM_BUFFER,
-                        ..Default::default()
-                    },
-                    AllocationCreateInfo {
-                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                        ..Default::default()
-                    },
-                    view,
-                )
-                .unwrap();
-                DescriptorSet::new(
-                    set_allocator.clone(),
-                    camera_set_layout.clone(),
-                    [WriteDescriptorSet::buffer(0, buffer)],
-                    [],
-                )
-                .unwrap()
-            })
-            .collect();
+        let cameras = create_cubemap_cameras(mem_allocator, set_allocator, camera_set_layout);
 
         Self { subpass, cameras }
     }
 }
 
 #[derive(Clone)]
-pub struct CubeRendererPipeline {
+pub struct CubemapRenderPipeline {
     pub pipeline: Arc<GraphicsPipeline>,
-    pub renderer: CubeRenderPass,
-    pub cube: CubeMesh,
+    pub renderer: Arc<CubemapRenderPass>,
+    pub cube: Arc<CubeMesh>,
 }
-impl CubeRendererPipeline {
+impl CubemapRenderPipeline {
     pub fn render<L>(
         &self,
         builder: &mut AutoCommandBufferBuilder<L>,
@@ -131,7 +138,7 @@ impl CubeRendererPipeline {
             )
             .unwrap();
 
-        let views = (0u32..6u32).into_iter().map(|i| {
+        let views = (0..6).map(|i| {
             ImageView::new(
                 image.clone(),
                 ImageViewCreateInfo {

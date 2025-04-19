@@ -15,6 +15,7 @@ gltf = "1.4.1"
 image = "0.25.6"
 log = "0.4.27"
 nalgebra-glm = { version = "0.19.0", features = ["convert-bytemuck"] }
+thiserror = "2.0.12"
 vulkano = "0.35.1"
 vulkano-shaders = "0.35.0"
 vulkano-util = "0.35.0"

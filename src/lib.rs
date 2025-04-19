@@ -1,33 +1,25 @@
 use camera::OrbitCamera;
-use cubemap::renderer::create_cubemap_image;
+use egui_file::FileDialog;
 use egui_winit_vulkano::CallbackFn;
-use image::EncodableLayout;
 use nalgebra_glm as glm;
-use renderer::Renderer;
-use std::{
-    path::{Path, PathBuf},
-    sync::Arc,
-    thread::JoinHandle,
-};
-use viewer::{GltfRenderInfo, loader::GltfLoader};
+use set_layouts::SetLayouts;
+use skybox::Skybox;
+use std::{env::current_dir, path::PathBuf, sync::Arc};
+use viewer::Viewer;
 use vulkano::{
-    DeviceSize,
-    buffer::{Buffer, BufferCreateInfo, BufferUsage, Subbuffer},
+    buffer::{
+        Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
+        allocator::{SubbufferAllocator, SubbufferAllocatorCreateInfo},
+    },
     command_buffer::{
-        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferToImageInfo,
-        PrimaryAutoCommandBuffer, PrimaryCommandBufferAbstract,
+        AutoCommandBufferBuilder, CommandBufferUsage, CopyBufferInfo, PrimaryCommandBufferAbstract,
         allocator::StandardCommandBufferAllocator,
     },
     descriptor_set::{
         DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
+        layout::DescriptorSetLayout,
     },
     device::{DeviceOwned, Queue},
-    format::Format,
-    image::{
-        Image, ImageCreateInfo, ImageType, ImageUsage,
-        sampler::{Sampler, SamplerCreateInfo},
-        view::{ImageView, ImageViewCreateInfo, ImageViewType},
-    },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
     pipeline::{Pipeline, PipelineBindPoint},
     render_pass::Subpass,
@@ -36,7 +28,10 @@ use vulkano::{
 
 mod camera;
 mod cubemap;
-mod renderer;
+mod gltf;
+
+mod set_layouts;
+mod skybox;
 mod viewer;
 
 #[derive(Clone)]
@@ -46,44 +41,143 @@ pub struct Allocators {
     pub set: Arc<StandardDescriptorSetAllocator>,
 }
 
-pub struct Triangle {
-    camera: OrbitCamera,
-    camera_buffer: Subbuffer<[glm::Mat4; 3]>,
-    camera_set: Arc<DescriptorSet>,
-
-    renderer: Renderer,
-
-    gltf_job: Option<JoinHandle<(GltfRenderInfo, Arc<PrimaryAutoCommandBuffer>)>>,
-    skybox_job: Option<
-        JoinHandle<(
-            (Arc<DescriptorSet>, Arc<DescriptorSet>),
-            Arc<PrimaryAutoCommandBuffer>,
-        )>,
-    >,
-
-    allocators: Allocators,
+#[repr(C)]
+#[derive(BufferContents)]
+pub struct CameraUniform {
+    view: glm::Mat4,
+    proj: glm::Mat4,
+    view_inv: glm::Mat4,
 }
-impl Triangle {
-    pub fn new(allocators: Allocators, queue: Arc<Queue>, subpass: Subpass) -> Self {
-        let camera = OrbitCamera::default();
-        let camera_buffer = Buffer::from_data(
-            allocators.mem.clone(),
+impl CameraUniform {
+    pub fn new(camera: &OrbitCamera, aspect: f32) -> Self {
+        Self {
+            view: camera.look_at(),
+            proj: camera.perspective(aspect),
+            view_inv: camera.look_at().try_inverse().unwrap(),
+        }
+    }
+}
+
+#[derive(Default)]
+pub enum FilePicker {
+    Skybox(FileDialog),
+    Gltf(FileDialog),
+    #[default]
+    None,
+}
+impl FilePicker {
+    pub fn skybox(&mut self) {
+        let extensions = ["hdr", "exr"];
+        let mut file_picker = FileDialog::open_file(self.initial_path())
+            .show_rename(false)
+            .show_new_folder(false)
+            .multi_select(false)
+            .show_files_filter(Box::new(move |path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| extensions.contains(&ext))
+            }));
+        file_picker.open();
+        *self = Self::Skybox(file_picker)
+    }
+    pub fn gltf(&mut self) {
+        let extensions = ["glb", "gltf"];
+        let mut file_picker = FileDialog::open_file(self.initial_path())
+            .show_rename(false)
+            .show_new_folder(false)
+            .multi_select(false)
+            .show_files_filter(Box::new(move |path| {
+                path.extension()
+                    .and_then(|ext| ext.to_str())
+                    .is_some_and(|ext| extensions.contains(&ext))
+            }));
+        file_picker.open();
+        *self = Self::Gltf(file_picker)
+    }
+    fn initial_path(&self) -> Option<PathBuf> {
+        match self {
+            FilePicker::Skybox(file_dialog) => Some(file_dialog.directory().to_owned()),
+            FilePicker::Gltf(file_dialog) => Some(file_dialog.directory().to_owned()),
+            FilePicker::None => current_dir().ok(),
+        }
+    }
+}
+
+struct CameraResource {
+    buffer: Subbuffer<CameraUniform>,
+    set: Arc<DescriptorSet>,
+}
+impl CameraResource {
+    pub fn new(
+        mem_allocator: Arc<StandardMemoryAllocator>,
+        set_allocator: Arc<StandardDescriptorSetAllocator>,
+        layout: Arc<DescriptorSetLayout>,
+    ) -> Self {
+        let buffer = Buffer::new_sized(
+            mem_allocator.clone(),
             BufferCreateInfo {
-                usage: BufferUsage::UNIFORM_BUFFER,
+                usage: BufferUsage::UNIFORM_BUFFER | BufferUsage::TRANSFER_DST,
                 ..Default::default()
             },
-            AllocationCreateInfo {
-                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
+            AllocationCreateInfo::default(),
+        )
+        .unwrap();
+        let set = DescriptorSet::new(
+            set_allocator.clone(),
+            layout,
+            [WriteDescriptorSet::buffer(0, buffer.clone())],
+            [],
+        )
+        .unwrap();
+
+        Self { buffer, set }
+    }
+}
+
+pub struct State {
+    queue: Arc<Queue>,
+    subbuffer_allocator: SubbufferAllocator,
+
+    camera: OrbitCamera,
+    cameras: Vec<CameraResource>,
+
+    aspect: f32,
+
+    skybox: Skybox,
+    viewer: Viewer,
+
+    file_picker: FilePicker,
+}
+impl State {
+    pub fn new(
+        allocators: &Allocators,
+        queue: Arc<Queue>,
+        num_frames: usize,
+        subpass: Subpass,
+    ) -> Self {
+        let camera = OrbitCamera::default();
+
+        let subbuffer_allocator = SubbufferAllocator::new(
+            allocators.mem.clone(),
+            SubbufferAllocatorCreateInfo {
+                buffer_usage: BufferUsage::TRANSFER_SRC,
+                memory_type_filter: MemoryTypeFilter::PREFER_HOST
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            [
-                camera.look_at(),
-                camera.perspective(1.0),
-                camera.look_at().try_inverse().unwrap(),
-            ],
-        )
-        .unwrap();
+        );
+
+        let set_layouts = SetLayouts::new(queue.device().clone());
+
+        let cameras = (0..num_frames)
+            .map(|_| {
+                CameraResource::new(
+                    allocators.mem.clone(),
+                    allocators.set.clone(),
+                    set_layouts.camera.clone(),
+                )
+            })
+            .collect();
 
         let mut builder = AutoCommandBufferBuilder::primary(
             allocators.cmd.clone(),
@@ -91,243 +185,108 @@ impl Triangle {
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
-        let renderer = Renderer::new(allocators.clone(), &mut builder, subpass);
-        let cb = builder.build().unwrap();
-        let _ = cb
-            .execute(queue)
+        let skybox = Skybox::new(allocators, &mut builder, &set_layouts, subpass.clone());
+
+        builder
+            .build()
+            .unwrap()
+            .execute(queue.clone())
             .unwrap()
             .then_signal_fence_and_flush()
             .unwrap()
-            .wait(None);
+            .wait(None)
+            .unwrap();
 
-        let camera_set = DescriptorSet::new(
-            allocators.set.clone(),
-            renderer.set_layouts.camera.clone(),
-            [WriteDescriptorSet::buffer(0, camera_buffer.clone())],
-            [],
-        )
-        .unwrap();
+        let viewer = Viewer::new(allocators, &set_layouts, subpass);
 
         Self {
             camera,
-            allocators,
-            camera_buffer,
-            renderer,
-            camera_set,
-            gltf_job: None,
-            skybox_job: None,
+            subbuffer_allocator,
+            aspect: 1.0,
+            skybox,
+            file_picker: FilePicker::default(),
+            queue,
+            cameras,
+            viewer,
         }
     }
-
-    pub fn load_gltf(&mut self, path: PathBuf, queue: Arc<Queue>) {
-        if self.gltf_job.is_some() {
-            return;
+    pub fn update<L>(&mut self, builder: &mut AutoCommandBufferBuilder<L>, index: usize) {
+        if let Some(conv) = self.skybox.update() {
+            self.viewer.new_env(conv);
         }
-        let allocators = self.allocators.clone();
-        let material_set_layout = self.renderer.set_layouts.material.clone();
+        self.viewer.update();
 
-        let job = std::thread::spawn(move || {
-            let builder = AutoCommandBufferBuilder::primary(
-                allocators.cmd.clone(),
-                queue.queue_family_index(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
-            let loader =
-                GltfLoader::new(allocators.clone(), material_set_layout, builder, &path).unwrap();
-
-            let info = GltfRenderInfo::from_scene(
-                allocators.mem.clone(),
-                loader.document.default_scene().unwrap(),
-                loader.meshes,
-            );
-
-            (info, loader.builder.build().unwrap())
-        });
-
-        self.gltf_job = Some(job);
-    }
-    pub fn loading_gltf(&self) -> bool {
-        self.gltf_job.is_some()
-    }
-
-    pub fn load_skybox(&mut self, path: PathBuf, queue: Arc<Queue>) {
-        if self.skybox_job.is_some() {
-            return;
-        }
-        let allocators = self.allocators.clone();
-        let equi_renderer = self.renderer.equi_renderer.clone();
-        let conv_renderer = self.renderer.conv_renderer.clone();
-        let texture_layout = self.renderer.set_layouts.texture.clone();
-        let job = std::thread::spawn(move || {
-            let mut builder = AutoCommandBufferBuilder::primary(
-                allocators.cmd.clone(),
-                queue.queue_family_index(),
-                CommandBufferUsage::OneTimeSubmit,
-            )
-            .unwrap();
-
-            let equi = load_skybox(allocators.mem.clone(), path, &mut builder);
-            let equi_view = ImageView::new_default(equi.clone()).unwrap();
-            let equi_set = DescriptorSet::new(
-                allocators.set.clone(),
-                texture_layout.clone(),
-                [WriteDescriptorSet::image_view_sampler(
-                    0,
-                    equi_view,
-                    Sampler::new(
-                        allocators.mem.device().clone(),
-                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-                    )
-                    .unwrap(),
-                )],
-                [],
-            )
-            .unwrap();
-
-            let cube = create_cubemap_image(allocators.mem.clone(), equi.extent()[1]);
-            equi_renderer.render(&mut builder, &equi_set, &cube);
-
-            let cube_view = ImageView::new(
-                cube.clone(),
-                ImageViewCreateInfo {
-                    view_type: ImageViewType::Cube,
-                    ..ImageViewCreateInfo::from_image(&cube)
-                },
-            )
-            .unwrap();
-            let cube_set = DescriptorSet::new(
-                allocators.set.clone(),
-                texture_layout.clone(),
-                [WriteDescriptorSet::image_view_sampler(
-                    0,
-                    cube_view,
-                    Sampler::new(
-                        allocators.mem.device().clone(),
-                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-                    )
-                    .unwrap(),
-                )],
-                [],
-            )
-            .unwrap();
-
-            let conv = create_cubemap_image(allocators.mem.clone(), 32);
-            conv_renderer.render(&mut builder, &cube_set, &conv);
-
-            let conv_view = ImageView::new(
-                conv.clone(),
-                ImageViewCreateInfo {
-                    view_type: ImageViewType::Cube,
-                    ..ImageViewCreateInfo::from_image(&conv)
-                },
-            )
-            .unwrap();
-            let conv_set = DescriptorSet::new(
-                allocators.set.clone(),
-                texture_layout.clone(),
-                [WriteDescriptorSet::image_view_sampler(
-                    0,
-                    conv_view,
-                    Sampler::new(
-                        allocators.mem.device().clone(),
-                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-                    )
-                    .unwrap(),
-                )],
-                [],
-            )
-            .unwrap();
-
-            let cb = builder.build().unwrap();
-            ((cube_set, conv_set), cb)
-        });
-        self.skybox_job = Some(job);
-    }
-    pub fn loading_skybox(&self) -> bool {
-        self.skybox_job.is_some()
-    }
-
-    pub fn update_gltf(&mut self) -> Option<Arc<PrimaryAutoCommandBuffer>> {
-        if self.gltf_job.as_ref().is_some_and(|job| job.is_finished()) {
-            let (info, cb) = self.gltf_job.take().unwrap().join().unwrap();
-            self.renderer.gltf_info = Some(info);
-            Some(cb)
-        } else {
-            None
+        if self.aspect.is_normal() {
+            let data = CameraUniform::new(&self.camera, self.aspect);
+            let buffer = self.subbuffer_allocator.allocate_sized().unwrap();
+            *buffer.write().unwrap() = data;
+            builder
+                .copy_buffer(CopyBufferInfo::buffers(
+                    buffer,
+                    self.cameras[index].buffer.clone(),
+                ))
+                .unwrap();
         }
     }
-    pub fn update_skybox(&mut self) -> Option<Arc<PrimaryAutoCommandBuffer>> {
-        if self
-            .skybox_job
-            .as_ref()
-            .is_some_and(|job| job.is_finished())
-        {
-            let ((cube, conv), cb) = self.skybox_job.take().unwrap().join().unwrap();
-
-            self.renderer.cube_set = Some(cube);
-            // self.renderer.cube_set = Some(conv.clone());
-            self.renderer.conv_set = conv;
-
-            Some(cb)
-        } else {
-            None
-        }
-    }
-
-    pub fn side(&mut self, ui: &mut egui::Ui) {
-        ui.collapsing("Camera", |ui| {
-            ui.label("Pitch");
-            ui.drag_angle(&mut self.camera.pitch);
-            ui.label("Yaw");
-            ui.drag_angle(&mut self.camera.yaw);
-
-            ui.separator();
-
-            ui.label("Near");
-            let diff = 0.01;
-            let old_near = self.camera.near;
-            ui.add(
-                egui::DragValue::new(&mut self.camera.near)
-                    .range(diff..=self.camera.far - diff)
-                    .speed(0.1),
-            );
-            ui.label("Far");
-            ui.add(
-                egui::DragValue::new(&mut self.camera.far)
-                    .range(old_near + diff..=f32::INFINITY)
-                    .speed(0.1),
-            );
-
-            ui.separator();
-
-            ui.label("Target");
-            ui.add(
-                egui::DragValue::new(&mut self.camera.target.x)
-                    .prefix("x: ")
-                    .speed(0.1),
-            );
-            ui.add(
-                egui::DragValue::new(&mut self.camera.target.y)
-                    .prefix("y: ")
-                    .speed(0.1),
-            );
-            ui.add(
-                egui::DragValue::new(&mut self.camera.target.z)
-                    .prefix("z: ")
-                    .speed(0.1),
-            );
-            if ui.button("Center").clicked() {
-                self.camera.target = glm::Vec3::zeros();
+    pub fn show(&mut self, ctx: &egui::Context, index: usize) {
+        match &mut self.file_picker {
+            FilePicker::Skybox(file_dialog) => {
+                if file_dialog.show(ctx).selected() {
+                    let file = file_dialog.path().unwrap();
+                    self.skybox.load(file.into(), self.queue.clone());
+                }
             }
+            FilePicker::Gltf(file_dialog) => {
+                if file_dialog.show(ctx).selected() {
+                    let file = file_dialog.path().unwrap();
+                    self.viewer.load(file.into(), self.queue.clone());
+                }
+            }
+            FilePicker::None => {}
+        }
+
+        egui::SidePanel::right("state_right_panel").show(ctx, |ui| {
+            ui.heading("Settings");
+
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!self.skybox.loading(), egui::Button::new("Open Skybox"))
+                    .clicked()
+                {
+                    self.file_picker.skybox();
+                }
+                if self.skybox.loading() {
+                    ui.spinner();
+                }
+            });
+            ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(!self.viewer.loading(), egui::Button::new("Open glTF"))
+                    .clicked()
+                {
+                    self.file_picker.gltf();
+                }
+                if self.viewer.loading() {
+                    ui.spinner();
+                }
+            });
+
+            ui.separator();
+
+            ui.collapsing("Camera", |ui| {
+                self.camera.ui(ui);
+            });
+
+            ui.separator();
         });
-    }
-    pub fn ui(&mut self, ctx: &egui::Context) {
+
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let (rect, response) =
                     ui.allocate_exact_size(ui.available_size(), egui::Sense::all());
+                self.aspect = rect.aspect_ratio();
+
                 let modifiers = response.ctx.input(|i| i.modifiers);
 
                 // pan
@@ -351,15 +310,9 @@ impl Triangle {
                 self.camera.zoom += self.camera.zoom * -smooth_scroll.y * 0.003;
                 self.camera.clamp();
 
-                let mut buffer = self.camera_buffer.write().unwrap();
-                *buffer = [
-                    self.camera.look_at(),
-                    self.camera.perspective(rect.aspect_ratio()),
-                    self.camera.look_at().try_inverse().unwrap(),
-                ];
-
-                let renderer = self.renderer.clone();
-                let camera_set = self.camera_set.clone();
+                let skybox = self.skybox.renderer.clone();
+                let viewer = self.viewer.renderer.clone();
+                let camera_set = self.cameras[index].set.clone();
                 let callback = egui::PaintCallback {
                     rect,
                     callback: Arc::new(CallbackFn::new(move |_info, context| {
@@ -367,76 +320,16 @@ impl Triangle {
                             .builder
                             .bind_descriptor_sets(
                                 PipelineBindPoint::Graphics,
-                                renderer.gltf_pipeline.pipeline.layout().clone(),
+                                viewer.pipeline.pipeline.layout().clone(),
                                 0,
                                 camera_set.clone(),
                             )
                             .unwrap();
-                        renderer.clone().render(context.builder);
+                        viewer.render(context.builder);
+                        skybox.render(context.builder);
                     })),
                 };
                 ui.painter().add(callback);
             });
     }
-}
-
-fn load_skybox<L>(
-    allocator: Arc<StandardMemoryAllocator>,
-    path: impl AsRef<Path>,
-    builder: &mut AutoCommandBufferBuilder<L>,
-) -> Arc<Image> {
-    // let mut reader = BufReader::new(std::fs::File::open(path).unwrap());
-    // let mut image_reader = image::ImageReader::new(&mut reader)
-    //     .with_guessed_format()
-    //     .unwrap();
-    // image_reader.no_limits();
-    // let image = image_reader.decode().unwrap().to_rgba32f();
-
-    let image = image::open(path).unwrap().to_rgba32f();
-    assert_eq!(
-        image.width() / 2,
-        image.height(),
-        "equirectangular image must be 2:1"
-    );
-
-    let stage_buffer = Buffer::new_slice(
-        allocator.clone(),
-        BufferCreateInfo {
-            usage: BufferUsage::TRANSFER_SRC,
-            ..Default::default()
-        },
-        AllocationCreateInfo {
-            memory_type_filter: MemoryTypeFilter::PREFER_HOST
-                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-            ..Default::default()
-        },
-        image.as_bytes().len() as DeviceSize,
-    )
-    .unwrap();
-    stage_buffer
-        .write()
-        .unwrap()
-        .copy_from_slice(image.as_bytes());
-
-    let image = Image::new(
-        allocator,
-        ImageCreateInfo {
-            image_type: ImageType::Dim2d,
-            format: Format::R32G32B32A32_SFLOAT,
-            extent: [image.width(), image.height(), 1],
-            usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
-            ..Default::default()
-        },
-        AllocationCreateInfo::default(),
-    )
-    .unwrap();
-
-    builder
-        .copy_buffer_to_image(CopyBufferToImageInfo::buffer_image(
-            stage_buffer,
-            image.clone(),
-        ))
-        .unwrap();
-
-    image
 }
