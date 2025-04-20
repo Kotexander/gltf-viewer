@@ -61,16 +61,21 @@ impl ViewerRenderer {
         .unwrap();
         let env_set = DescriptorSet::new(
             allocators.set.clone(),
-            set_layouts.texture.clone(),
-            [WriteDescriptorSet::image_view_sampler(
-                0,
-                env_view,
-                Sampler::new(
-                    device.clone(),
-                    SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-                )
-                .unwrap(),
-            )],
+            set_layouts.environment.clone(),
+            [
+                WriteDescriptorSet::image_view_sampler(
+                    0,
+                    env_view.clone(),
+                    Sampler::new(device.clone(), SamplerCreateInfo::simple_repeat_linear())
+                        .unwrap(),
+                ),
+                WriteDescriptorSet::image_view_sampler(
+                    1,
+                    env_view,
+                    Sampler::new(device.clone(), SamplerCreateInfo::simple_repeat_linear())
+                        .unwrap(),
+                ),
+            ],
             [],
         )
         .unwrap();

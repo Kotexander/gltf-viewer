@@ -1,6 +1,6 @@
 use crate::{
     Allocators,
-    cubemap::{CubeMesh, CubemapPipelineLayout, CubemapShaders},
+    cubemap::{CubeMesh, CubemapPipelineBuilder, CubemapVertexShader, cubemap_pipeline_layout},
     set_layouts::SetLayouts,
 };
 use loader::SkyboxLoader;
@@ -26,7 +26,7 @@ pub mod renderer;
 pub struct Skybox {
     pub renderer: SkyboxRenderer,
     pub loader: SkyboxLoader,
-    pub job: Option<JoinHandle<(Arc<Image>, Arc<Image>)>>,
+    pub job: Option<JoinHandle<(Arc<Image>, Arc<Image>, Arc<Image>)>>,
 }
 impl Skybox {
     pub fn new<L>(
@@ -40,22 +40,18 @@ impl Skybox {
         let cube = Arc::new(CubeMesh::new(allocators.mem.clone(), builder));
 
         let cubemap_pipeline_layout =
-            CubemapPipelineLayout::new(set_layouts.camera.clone(), set_layouts.texture.clone());
-        let cubemap_shaders = CubemapShaders::new(device.clone());
+            cubemap_pipeline_layout(set_layouts.camera.clone(), set_layouts.texture.clone());
+        let vertex = CubemapVertexShader::new(device.clone());
 
-        let skybox_pipeline = cubemap_pipeline_layout.clone().create_pipeline(
-            cubemap_shaders.vs.clone(),
-            cubemap_shaders.cube_fs.clone(),
-            cubemap_shaders.vertex_input_state.clone(),
-            subpass.clone(),
-        );
+        let skybox_pipeline = CubemapPipelineBuilder::new_cube(vertex.clone())
+            .build(cubemap_pipeline_layout.clone(), subpass);
 
         let loader = SkyboxLoader::new(
             allocators.clone(),
             &cubemap_pipeline_layout,
-            &cubemap_shaders,
+            &vertex,
             set_layouts,
-            cube.clone(),
+            &cube,
         );
         let renderer = SkyboxRenderer {
             pipeline: skybox_pipeline,
@@ -92,14 +88,15 @@ impl Skybox {
                 .unwrap();
 
             image
+            // todo!()
         });
         self.job = Some(job)
     }
     pub fn loading(&self) -> bool {
         self.job.is_some()
     }
-    pub fn update(&mut self) -> Option<Arc<Image>> {
-        if let Some((cube, conv)) = self
+    pub fn update(&mut self) -> Option<(Arc<Image>, Arc<Image>)> {
+        if let Some((cube, conv, filt)) = self
             .job
             .take_if(|job| job.is_finished())
             .map(|job| job.join().unwrap())
@@ -120,7 +117,7 @@ impl Skybox {
                     cube_view.clone(),
                     Sampler::new(
                         self.loader.allocators.mem.device().clone(),
-                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+                        SamplerCreateInfo::simple_repeat_linear(),
                     )
                     .unwrap(),
                 )],
@@ -128,7 +125,7 @@ impl Skybox {
             )
             .unwrap();
             self.renderer.skybox = Some(cube_set);
-            Some(conv)
+            Some((conv, filt))
         } else {
             None
         }

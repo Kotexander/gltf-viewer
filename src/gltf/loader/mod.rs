@@ -202,7 +202,7 @@ impl<'a> Loader<'a> {
             let view = ImageView::new_default(image).unwrap();
             let sampler = Sampler::new(
                 self.allocators.mem.device().clone(),
-                SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+                SamplerCreateInfo::simple_repeat_linear(),
             )
             .unwrap();
             self.default_texture = Some(Texture { view, sampler });

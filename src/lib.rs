@@ -67,7 +67,7 @@ pub enum FilePicker {
 }
 impl FilePicker {
     pub fn skybox(&mut self) {
-        let extensions = ["hdr", "exr"];
+        let extensions = ["hdr", "exr", "jpg"];
         let mut file_picker = FileDialog::open_file(self.initial_path())
             .show_rename(false)
             .show_new_folder(false)
@@ -211,8 +211,8 @@ impl State {
         }
     }
     pub fn update<L>(&mut self, builder: &mut AutoCommandBufferBuilder<L>, index: usize) {
-        if let Some(conv) = self.skybox.update() {
-            self.viewer.new_env(conv);
+        if let Some((conv, filt)) = self.skybox.update() {
+            self.viewer.new_env(conv, filt);
         }
         self.viewer.update();
 

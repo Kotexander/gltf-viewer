@@ -29,16 +29,16 @@ fn create_cubemap_cameras(
     set_allocator: Arc<StandardDescriptorSetAllocator>,
     camera_set_layout: Arc<DescriptorSetLayout>,
 ) -> Vec<Arc<DescriptorSet>> {
-    let proj = glm::perspective_lh_zo(1.0, std::f32::consts::FRAC_PI_2, 0.1, 10.0);
+    let proj = glm::perspective_rh_zo(1.0, std::f32::consts::FRAC_PI_2, 0.1, 10.0);
     let eye = glm::Vec3::zeros();
     #[rustfmt::skip]
     let views = [
-        [glm::look_at_lh(&eye, &glm::vec3(-1.0,  0.0,  0.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
-        [glm::look_at_lh(&eye, &glm::vec3( 1.0,  0.0,  0.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
-        [glm::look_at_lh(&eye, &glm::vec3( 0.0,  1.0,  0.0), &glm::vec3(0.0,  0.0,  1.0)), proj],
-        [glm::look_at_lh(&eye, &glm::vec3( 0.0, -1.0,  0.0), &glm::vec3(0.0,  0.0, -1.0)), proj],
-        [glm::look_at_lh(&eye, &glm::vec3( 0.0,  0.0,  1.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
-        [glm::look_at_lh(&eye, &glm::vec3( 0.0,  0.0, -1.0), &glm::vec3(0.0, -1.0,  0.0)), proj],
+        [glm::look_at_rh(&eye, &glm::vec3( 1.0,  0.0,  0.0), &glm::vec3( 0.0, -1.0,  0.0)), proj],
+        [glm::look_at_rh(&eye, &glm::vec3(-1.0,  0.0,  0.0), &glm::vec3( 0.0, -1.0,  0.0)), proj],
+        [glm::look_at_rh(&eye, &glm::vec3( 0.0,  1.0,  0.0), &glm::vec3( 0.0,  0.0,  1.0)), proj],
+        [glm::look_at_rh(&eye, &glm::vec3( 0.0, -1.0,  0.0), &glm::vec3( 0.0,  0.0, -1.0)), proj],
+        [glm::look_at_rh(&eye, &glm::vec3( 0.0,  0.0,  1.0), &glm::vec3( 0.0, -1.0,  0.0)), proj],
+        [glm::look_at_rh(&eye, &glm::vec3( 0.0,  0.0, -1.0), &glm::vec3( 0.0, -1.0,  0.0)), proj],
     ];
 
     views
@@ -116,13 +116,16 @@ impl CubemapRenderPipeline {
         builder: &mut AutoCommandBufferBuilder<L>,
         equi_set: &Arc<DescriptorSet>,
         image: &Arc<Image>,
+        mip: u32,
     ) {
         let extent = image.extent();
+        let mip_width = (extent[0] >> mip).max(1);
+        let mip_height = (extent[1] >> mip).max(1);
         builder
             .set_viewport(
                 0,
                 vec![Viewport {
-                    extent: [extent[0] as f32, extent[1] as f32],
+                    extent: [mip_width as f32, mip_height as f32],
                     ..Default::default()
                 }]
                 .into(),
@@ -131,7 +134,7 @@ impl CubemapRenderPipeline {
             .set_scissor(
                 0,
                 vec![Scissor {
-                    extent: [extent[0], extent[1]],
+                    extent: [mip_width, mip_height],
                     ..Default::default()
                 }]
                 .into(),
@@ -146,7 +149,7 @@ impl CubemapRenderPipeline {
                     format: image.format(),
                     subresource_range: ImageSubresourceRange {
                         aspects: image.format().aspects(),
-                        mip_levels: 0..1,
+                        mip_levels: mip..mip + 1,
                         array_layers: i..i + 1,
                     },
                     ..Default::default()
@@ -192,7 +195,11 @@ impl CubemapRenderPipeline {
     }
 }
 
-pub fn create_cubemap_image(allocator: Arc<StandardMemoryAllocator>, size: u32) -> Arc<Image> {
+pub fn create_cubemap_image(
+    allocator: Arc<StandardMemoryAllocator>,
+    size: u32,
+    mips: u32,
+) -> Arc<Image> {
     Image::new(
         allocator,
         ImageCreateInfo {
@@ -201,6 +208,7 @@ pub fn create_cubemap_image(allocator: Arc<StandardMemoryAllocator>, size: u32) 
             image_type: ImageType::Dim2d,
             array_layers: 6,
             extent: [size, size, 1],
+            mip_levels: mips,
             format: Format::R16G16B16A16_SFLOAT,
             ..Default::default()
         },

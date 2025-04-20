@@ -77,27 +77,46 @@ impl Viewer {
             self.renderer.info = Some(info);
         }
     }
-    pub fn new_env(&mut self, env: Arc<Image>) {
-        let env_view = ImageView::new(
-            env.clone(),
+    pub fn new_env(&mut self, diffuse: Arc<Image>, specular: Arc<Image>) {
+        let diffuse_view = ImageView::new(
+            diffuse.clone(),
             ImageViewCreateInfo {
                 view_type: ImageViewType::Cube,
-                ..ImageViewCreateInfo::from_image(&env)
+                ..ImageViewCreateInfo::from_image(&diffuse)
+            },
+        )
+        .unwrap();
+        let specular_view = ImageView::new(
+            specular.clone(),
+            ImageViewCreateInfo {
+                view_type: ImageViewType::Cube,
+                ..ImageViewCreateInfo::from_image(&specular)
             },
         )
         .unwrap();
         let env_set = DescriptorSet::new(
             self.loader.allocators.set.clone(),
             self.renderer.pipeline.pipeline.layout().set_layouts()[1].clone(),
-            [WriteDescriptorSet::image_view_sampler(
-                0,
-                env_view,
-                Sampler::new(
-                    self.renderer.pipeline.pipeline.device().clone(),
-                    SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-                )
-                .unwrap(),
-            )],
+            [
+                WriteDescriptorSet::image_view_sampler(
+                    0,
+                    diffuse_view,
+                    Sampler::new(
+                        self.renderer.pipeline.pipeline.device().clone(),
+                        SamplerCreateInfo::simple_repeat_linear(),
+                    )
+                    .unwrap(),
+                ),
+                WriteDescriptorSet::image_view_sampler(
+                    1,
+                    specular_view,
+                    Sampler::new(
+                        self.renderer.pipeline.pipeline.device().clone(),
+                        SamplerCreateInfo::simple_repeat_linear(),
+                    )
+                    .unwrap(),
+                ),
+            ],
             [],
         )
         .unwrap();

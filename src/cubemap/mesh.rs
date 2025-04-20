@@ -18,33 +18,25 @@ pub struct CubemapVertex {
 
 #[rustfmt::skip]
 const VERTICES: [CubemapVertex; 8] = [
-    CubemapVertex { position: glm::Vec3::new(-0.5, -0.5, -0.5) },
-    CubemapVertex { position: glm::Vec3::new( 0.5, -0.5, -0.5) },
-    CubemapVertex { position: glm::Vec3::new( 0.5,  0.5, -0.5) },
-    CubemapVertex { position: glm::Vec3::new(-0.5,  0.5, -0.5) },
-    CubemapVertex { position: glm::Vec3::new(-0.5, -0.5,  0.5) },
-    CubemapVertex { position: glm::Vec3::new( 0.5, -0.5,  0.5) },
-    CubemapVertex { position: glm::Vec3::new( 0.5,  0.5,  0.5) },
-    CubemapVertex { position: glm::Vec3::new(-0.5,  0.5,  0.5) },
+    CubemapVertex { position: glm::Vec3::new(-1.0, -1.0, -1.0) },
+    CubemapVertex { position: glm::Vec3::new( 1.0, -1.0, -1.0) },
+    CubemapVertex { position: glm::Vec3::new( 1.0,  1.0, -1.0) },
+    CubemapVertex { position: glm::Vec3::new(-1.0,  1.0, -1.0) },
+    CubemapVertex { position: glm::Vec3::new(-1.0, -1.0,  1.0) },
+    CubemapVertex { position: glm::Vec3::new( 1.0, -1.0,  1.0) },
+    CubemapVertex { position: glm::Vec3::new( 1.0,  1.0,  1.0) },
+    CubemapVertex { position: glm::Vec3::new(-1.0,  1.0,  1.0) },
 ];
 
 #[rustfmt::skip]
 const INDICES: [u16; 36] = [
-    // back face (z+)
-    6, 5, 4,
-    4, 7, 6,
-
-    // front face (z-)
-    2, 3, 0,
-    0, 1, 2,
+    // right face (x+)
+    6, 2, 1,
+    1, 5, 6,
 
     // left face (x-)
     7, 4, 0,
     0, 3, 7,
-
-    // right face (x+)
-    6, 2, 1,
-    1, 5, 6,
 
     // top face (y+)
     6, 7, 3,
@@ -53,6 +45,14 @@ const INDICES: [u16; 36] = [
     // bottom face (y-)
     5, 1, 0,
     0, 4, 5,
+
+    // back face (z+)
+    6, 5, 4,
+    4, 7, 6,
+
+    // front face (z-)
+    2, 3, 0,
+    0, 1, 2,
 ];
 
 #[derive(Clone)]

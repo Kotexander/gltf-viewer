@@ -42,7 +42,7 @@ impl Texture {
                 min_filter,
                 mipmap_mode,
                 address_mode,
-                ..SamplerCreateInfo::default()
+                ..SamplerCreateInfo::simple_repeat_linear()
             },
         )
         .unwrap();

@@ -17,7 +17,7 @@ layout(set = 0, binding = 0) uniform Camera {
 } cam;
 
 layout(set = 1, binding = 0) uniform samplerCube envMap;
-// layout(set = 1, binding = 1) uniform samplerCube spcMap;
+layout(set = 1, binding = 1) uniform samplerCube spcMap;
 
 layout(set = 2, binding = 0) uniform Factors {
     vec4 bc;
@@ -138,12 +138,14 @@ void main() {
 
     vec3 f = fresnel_shlick(n_dot_v, f0, rm.x);
     vec3 kd = (vec3(1.0) - f) * (1.0 - rm.y);
-    vec3 diffuse = texture(envMap, vec3(-N.x, N.y, N.z)).rgb * albedo * kd;
-    // vec3 R = reflect(-V, N);
-    // vec3 specular = texture(spcMap, vec3(-R.x, R.y, R.z)).rgb * f;
-    vec3 ambient = (diffuse) * ao;
+
+    vec3 diffuse = texture(envMap, N).rgb * albedo * kd;
+
+    vec3 R = reflect(-V, N);
+    const float MAX_REFLECTION_LOD = 4.0;
+    vec3 specular = textureLod(spcMap, R, rm.x * MAX_REFLECTION_LOD).rgb * f;
+
+    vec3 ambient = (diffuse + specular) * ao;
     vec3 color = Lo + ambient + em;
-    // vec3 tone_map = color / (color + vec3(1.0));
-    // f_color = vec4(tone_map, 1.0);
     f_color = vec4(color, 1.0);
 }

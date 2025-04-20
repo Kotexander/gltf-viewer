@@ -1,7 +1,8 @@
 use crate::{
     Allocators,
     cubemap::{
-        CubeMesh, CubemapPipelineLayout, CubemapShaders,
+        CubeMesh, CubemapPipelineBuilder, CubemapVertexShader,
+        filt::filter_pipeline_layout,
         renderer::{CubemapRenderPass, CubemapRenderPipeline, create_cubemap_image},
     },
     set_layouts::SetLayouts,
@@ -12,7 +13,10 @@ use vulkano::{
     DeviceSize,
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
     command_buffer::{AutoCommandBufferBuilder, CopyBufferToImageInfo},
-    descriptor_set::{DescriptorSet, WriteDescriptorSet},
+    descriptor_set::{
+        DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
+        layout::DescriptorSetLayout,
+    },
     device::DeviceOwned,
     format::Format,
     image::{
@@ -21,22 +25,23 @@ use vulkano::{
         view::{ImageView, ImageViewCreateInfo, ImageViewType},
     },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
-    pipeline::Pipeline,
+    pipeline::{Pipeline, PipelineLayout},
 };
 
 #[derive(Clone)]
 pub struct SkyboxLoader {
     pub equirectangular_renderer: CubemapRenderPipeline,
     pub convolute_renderer: CubemapRenderPipeline,
+    pub filter_renderer: CubemapRenderPipeline,
     pub allocators: Allocators,
 }
 impl SkyboxLoader {
     pub fn new(
         allocators: Allocators,
-        pipeline_layout: &CubemapPipelineLayout,
-        shaders: &CubemapShaders,
+        cubemap_layout: &Arc<PipelineLayout>,
+        vertex: &CubemapVertexShader,
         set_layouts: &SetLayouts,
-        cube: Arc<CubeMesh>,
+        cube: &Arc<CubeMesh>,
     ) -> Self {
         let cube_render_pass = Arc::new(CubemapRenderPass::new(
             allocators.mem.clone(),
@@ -44,29 +49,29 @@ impl SkyboxLoader {
             set_layouts.camera.clone(),
         ));
         let equirectangular_renderer = CubemapRenderPipeline {
-            pipeline: pipeline_layout.clone().create_pipeline(
-                shaders.vs.clone(),
-                shaders.equi_fs.clone(),
-                shaders.vertex_input_state.clone(),
-                cube_render_pass.subpass.clone(),
-            ),
+            pipeline: CubemapPipelineBuilder::new_equi(vertex.clone())
+                .build(cubemap_layout.clone(), cube_render_pass.subpass.clone()),
             renderer: cube_render_pass.clone(),
             cube: cube.clone(),
         };
         let convolute_renderer = CubemapRenderPipeline {
-            pipeline: pipeline_layout.clone().create_pipeline(
-                shaders.vs.clone(),
-                shaders.conv_fs.clone(),
-                shaders.vertex_input_state.clone(),
-                cube_render_pass.subpass.clone(),
-            ),
-            renderer: cube_render_pass,
-            cube,
+            pipeline: CubemapPipelineBuilder::new_conv(vertex.clone())
+                .build(cubemap_layout.clone(), cube_render_pass.subpass.clone()),
+            renderer: cube_render_pass.clone(),
+            cube: cube.clone(),
         };
-
+        let filter_pipeline =
+            filter_pipeline_layout(set_layouts.camera.clone(), set_layouts.texture.clone());
+        let filter_renderer = CubemapRenderPipeline {
+            pipeline: CubemapPipelineBuilder::new_filt(vertex.clone())
+                .build(filter_pipeline, cube_render_pass.subpass.clone()),
+            renderer: cube_render_pass,
+            cube: cube.clone(),
+        };
         Self {
             equirectangular_renderer,
             convolute_renderer,
+            filter_renderer,
             allocators,
         }
     }
@@ -75,7 +80,8 @@ impl SkyboxLoader {
         &self,
         path: impl AsRef<Path>,
         builder: &mut AutoCommandBufferBuilder<L>,
-    ) -> Result<(Arc<Image>, Arc<Image>), LoadSkyboxError> {
+    ) -> Result<(Arc<Image>, Arc<Image>, Arc<Image>), LoadSkyboxError> {
+        // load equirectangular texture
         let equi = load_skybox(self.allocators.mem.clone(), path, builder)?;
         let equi_view = ImageView::new_default(equi.clone()).unwrap();
         let equi_set = DescriptorSet::new(
@@ -90,7 +96,7 @@ impl SkyboxLoader {
                 equi_view,
                 Sampler::new(
                     self.allocators.mem.device().clone(),
-                    SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+                    SamplerCreateInfo::simple_repeat_linear(),
                 )
                 .unwrap(),
             )],
@@ -98,73 +104,38 @@ impl SkyboxLoader {
         )
         .unwrap();
 
-        let cube = create_cubemap_image(self.allocators.mem.clone(), equi.extent()[0] / 4);
+        // render equirectangular texture to cubemap
+        let cube = create_cubemap_image(self.allocators.mem.clone(), equi.extent()[0] / 4, 1);
         self.equirectangular_renderer
-            .render(builder, &equi_set, &cube);
+            .render(builder, &equi_set, &cube, 0);
 
-        let cube_view = ImageView::new(
-            cube.clone(),
-            ImageViewCreateInfo {
-                view_type: ImageViewType::Cube,
-                ..ImageViewCreateInfo::from_image(&cube)
-            },
-        )
-        .unwrap();
-        let cube_set = DescriptorSet::new(
+        // convolute cubemap
+        let cube_set = cube_set(
             self.allocators.set.clone(),
             self.convolute_renderer.pipeline.layout().set_layouts()[1].clone(),
-            [WriteDescriptorSet::image_view_sampler(
-                0,
-                cube_view.clone(),
-                Sampler::new(
-                    self.allocators.mem.device().clone(),
-                    SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+            cube.clone(),
+        );
+        let conv = create_cubemap_image(self.allocators.mem.clone(), 8, 1);
+        self.convolute_renderer.render(builder, &cube_set, &conv, 0);
+
+        let mips = 5;
+        // don't change size since shader expects texture to be this size
+        let filt = create_cubemap_image(self.allocators.mem.clone(), 512, mips);
+        for mip in 0..mips {
+            let roughness = mip as f32 / (mips - 1) as f32;
+            builder
+                .push_constants(
+                    self.filter_renderer.pipeline.layout().clone(),
+                    0,
+                    [roughness],
                 )
-                .unwrap(),
-            )],
-            [],
-        )
-        .unwrap();
+                .unwrap();
+            self.filter_renderer.render(builder, &cube_set, &filt, mip);
+        }
 
-        let conv = create_cubemap_image(self.allocators.mem.clone(), 32);
-        self.convolute_renderer.render(builder, &cube_set, &conv);
-
-        // let conv_view = ImageView::new(
-        //     conv.clone(),
-        //     ImageViewCreateInfo {
-        //         view_type: ImageViewType::Cube,
-        //         ..ImageViewCreateInfo::from_image(&conv)
-        //     },
-        // )
-        // .unwrap();
-        // let conv_set = DescriptorSet::new(
-        //     allocators.set.clone(),
-        //     environment_layout.clone(),
-        //     [
-        //         WriteDescriptorSet::image_view_sampler(
-        //             0,
-        //             conv_view,
-        //             Sampler::new(
-        //                 allocators.mem.device().clone(),
-        //                 SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-        //             )
-        //             .unwrap(),
-        //         ),
-        //         WriteDescriptorSet::image_view_sampler(
-        //             1,
-        //             cube_view,
-        //             Sampler::new(
-        //                 allocators.mem.device().clone(),
-        //                 SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-        //             )
-        //             .unwrap(),
-        //         ),
-        //     ],
-        //     [],
-        // )
-        // .unwrap();
-
-        Ok((cube, conv))
+        Ok((cube, conv, filt))
+        // Ok((filt, conv))
+        // Ok((conv.clone(), conv))
     }
 }
 
@@ -232,4 +203,34 @@ fn load_skybox<L>(
         .unwrap();
 
     Ok(image)
+}
+
+pub fn cube_set(
+    allocator: Arc<StandardDescriptorSetAllocator>,
+    set_layout: Arc<DescriptorSetLayout>,
+    image: Arc<Image>,
+) -> Arc<DescriptorSet> {
+    let view = ImageView::new(
+        image.clone(),
+        ImageViewCreateInfo {
+            view_type: ImageViewType::Cube,
+            ..ImageViewCreateInfo::from_image(&image)
+        },
+    )
+    .unwrap();
+    DescriptorSet::new(
+        allocator.clone(),
+        set_layout,
+        [WriteDescriptorSet::image_view_sampler(
+            0,
+            view.clone(),
+            Sampler::new(
+                allocator.device().clone(),
+                SamplerCreateInfo::simple_repeat_linear(),
+            )
+            .unwrap(),
+        )],
+        [],
+    )
+    .unwrap()
 }
