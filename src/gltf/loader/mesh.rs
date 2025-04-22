@@ -121,7 +121,10 @@ impl Primitive {
         let vbuf = Buffer::new_slice(
             loader.allocators.mem.clone(),
             BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST | BufferUsage::VERTEX_BUFFER,
+                usage: BufferUsage::TRANSFER_DST
+                    | BufferUsage::VERTEX_BUFFER
+                    | BufferUsage::SHADER_DEVICE_ADDRESS
+                    | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
                 ..Default::default()
             },
             AllocationCreateInfo::default(),
@@ -131,7 +134,10 @@ impl Primitive {
         let ibuf = Buffer::new_slice(
             loader.allocators.mem.clone(),
             BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST | BufferUsage::INDEX_BUFFER,
+                usage: BufferUsage::TRANSFER_DST
+                    | BufferUsage::INDEX_BUFFER
+                    | BufferUsage::SHADER_DEVICE_ADDRESS
+                    | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
                 ..Default::default()
             },
             AllocationCreateInfo::default(),
@@ -172,6 +178,12 @@ impl Primitive {
         builder.bind_vertex_buffers(0, self.vbuf).unwrap();
         builder.bind_index_buffer(self.ibuf).unwrap();
         unsafe { builder.draw_indexed(self.ilen, instances, 0, 0, 0) }.unwrap();
+    }
+    pub fn vbuf(&self) -> &Subbuffer<[PrimitiveVertex]> {
+        &self.vbuf
+    }
+    pub fn ibuf(&self) -> &Subbuffer<[u32]> {
+        &self.ibuf
     }
 }
 

@@ -2,6 +2,7 @@ use camera::OrbitCamera;
 use egui_file::FileDialog;
 use egui_winit_vulkano::CallbackFn;
 use nalgebra_glm as glm;
+use raytracer::Raytracer;
 use set_layouts::SetLayouts;
 use skybox::Skybox;
 use std::{env::current_dir, path::PathBuf, sync::Arc};
@@ -30,6 +31,7 @@ mod camera;
 mod cubemap;
 mod gltf;
 
+mod raytracer;
 mod set_layouts;
 mod skybox;
 mod viewer;
@@ -145,6 +147,7 @@ pub struct State {
 
     skybox: Skybox,
     viewer: Viewer,
+    pub raytracer: Raytracer,
 
     file_picker: FilePicker,
 }
@@ -199,6 +202,8 @@ impl State {
 
         let viewer = Viewer::new(allocators, &set_layouts, subpass);
 
+        let raytracer = Raytracer::new(queue.device(), allocators.clone());
+
         Self {
             camera,
             subbuffer_allocator,
@@ -208,13 +213,19 @@ impl State {
             queue,
             cameras,
             viewer,
+            raytracer,
         }
     }
     pub fn update<L>(&mut self, builder: &mut AutoCommandBufferBuilder<L>, index: usize) {
         if let Some((conv, filt)) = self.skybox.update() {
             self.viewer.new_env(conv, filt);
         }
-        self.viewer.update();
+        if self.viewer.update() {
+            self.raytracer.build(
+                self.queue.clone(),
+                self.viewer.renderer.info.as_ref().unwrap(),
+            );
+        }
 
         if self.aspect.is_normal() {
             let data = CameraUniform::new(&self.camera, self.aspect);
@@ -313,6 +324,12 @@ impl State {
                 let skybox = self.skybox.renderer.clone();
                 let viewer = self.viewer.renderer.clone();
                 let camera_set = self.cameras[index].set.clone();
+
+                self.raytracer
+                    .resize([rect.width() as u32, rect.height() as u32]);
+                let raytracer = self.raytracer.clone();
+                let camera = self.camera;
+                let aspect = self.aspect;
                 let callback = egui::PaintCallback {
                     rect,
                     callback: Arc::new(CallbackFn::new(move |_info, context| {
@@ -327,6 +344,7 @@ impl State {
                             .unwrap();
                         viewer.render(context.builder);
                         skybox.render(context.builder);
+                        raytracer.render(camera, aspect, context.resources.queue.clone());
                     })),
                 };
                 ui.painter().add(callback);

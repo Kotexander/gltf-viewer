@@ -68,13 +68,16 @@ impl Viewer {
 
         self.job = Some(job);
     }
-    pub fn update(&mut self) {
+    pub fn update(&mut self) -> bool {
         if let Some(info) = self
             .job
             .take_if(|job| job.is_finished())
             .map(|job| job.join().unwrap())
         {
             self.renderer.info = Some(info);
+            true
+        } else {
+            false
         }
     }
     pub fn new_env(&mut self, diffuse: Arc<Image>, specular: Arc<Image>) {

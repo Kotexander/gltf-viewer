@@ -56,6 +56,11 @@ pub struct InstancedMesh {
     instances: Subbuffer<[Instance]>,
     len: u32,
 }
+impl InstancedMesh {
+    pub fn primatives(&self) -> &[Primitive] {
+        &self.primitives
+    }
+}
 
 #[derive(Clone)]
 pub struct GltfRenderInfo {

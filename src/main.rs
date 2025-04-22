@@ -8,9 +8,9 @@ use vulkano::{
         allocator::{StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo},
     },
     descriptor_set::allocator::StandardDescriptorSetAllocator,
-    device::DeviceExtensions,
+    device::{DeviceExtensions, DeviceFeatures},
     format::Format,
-    image::ImageUsage,
+    image::{ImageUsage, sampler::SamplerCreateInfo},
     instance::{
         InstanceCreateInfo,
         debug::{
@@ -100,6 +100,14 @@ impl App {
         }
         let device_extensions = DeviceExtensions {
             khr_swapchain: true,
+            khr_ray_tracing_pipeline: true,
+            khr_deferred_host_operations: true,
+            ..Default::default()
+        };
+        let device_features = DeviceFeatures {
+            ray_tracing_pipeline: true,
+            buffer_device_address: true,
+            acceleration_structure: true,
             ..Default::default()
         };
         let context = VulkanoContext::new(VulkanoConfig {
@@ -118,6 +126,7 @@ impl App {
             },
             debug_create_info: debug_info,
             device_extensions,
+            device_features,
             print_device_name: true,
             device_priority_fn: Arc::new(|_| 0),
             ..Default::default()
@@ -229,6 +238,14 @@ impl ApplicationHandler for App {
 
                 window.gui.immediate_ui(|gui| {
                     window.state.show(&gui.egui_ctx, frame_index);
+                    let id = gui.register_user_image_view(
+                        window.state.raytracer.view.clone(),
+                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
+                    );
+
+                    egui::Window::new("Preview").show(&gui.egui_ctx, |ui| {
+                        ui.image((id, ui.available_size()));
+                    });
                 });
 
                 match renderer.acquire(None, |views| {
@@ -261,9 +278,9 @@ impl ApplicationHandler for App {
                         builder.execute_commands(cb).unwrap();
                         builder.end_render_pass(Default::default()).unwrap();
 
-                        let command_buffer = builder.build().unwrap();
+                        let cb = builder.build().unwrap();
                         let after_future = before_future
-                            .then_execute(renderer.graphics_queue(), command_buffer)
+                            .then_execute(renderer.graphics_queue(), cb)
                             .unwrap();
 
                         renderer.present(after_future.boxed(), false);
