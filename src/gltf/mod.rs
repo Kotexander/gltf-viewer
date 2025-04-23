@@ -53,12 +53,16 @@ impl From<glm::Mat4> for Instance {
 #[derive(Clone)]
 pub struct InstancedMesh {
     primitives: Vec<Primitive>,
-    instances: Subbuffer<[Instance]>,
+    instance_buffer: Subbuffer<[Instance]>,
+    instances: Vec<glm::Mat4>,
     len: u32,
 }
 impl InstancedMesh {
     pub fn primatives(&self) -> &[Primitive] {
         &self.primitives
+    }
+    pub fn instances(&self) -> &[glm::Mat4] {
+        &self.instances
     }
 }
 
@@ -79,9 +83,9 @@ impl GltfRenderInfo {
         let meshes = builder
             .instances
             .into_iter()
-            .map(|(index, instance)| {
+            .map(|(index, instances)| {
                 let mesh = meshes[index].take().unwrap();
-                let instances = Buffer::from_iter(
+                let instance_buffer = Buffer::from_iter(
                     allocator.clone(),
                     BufferCreateInfo {
                         usage: BufferUsage::VERTEX_BUFFER,
@@ -92,12 +96,13 @@ impl GltfRenderInfo {
                             | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                         ..Default::default()
                     },
-                    instance.into_iter().map(Instance::from),
+                    instances.iter().copied().map(Instance::from),
                 )
                 .unwrap();
                 InstancedMesh {
-                    len: instances.len() as u32,
+                    len: instance_buffer.len() as u32,
                     primitives: mesh.primitives.clone(),
+                    instance_buffer,
                     instances,
                 }
             })
@@ -215,7 +220,9 @@ impl GltfPipeline {
             .bind_pipeline_graphics(self.pipeline.clone())
             .unwrap();
         for mesh in info.meshes {
-            builder.bind_vertex_buffers(1, mesh.instances).unwrap();
+            builder
+                .bind_vertex_buffers(1, mesh.instance_buffer)
+                .unwrap();
             for primitive in mesh.primitives {
                 primitive.render(layout.clone(), mesh.len, builder);
             }

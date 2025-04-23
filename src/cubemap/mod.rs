@@ -22,7 +22,6 @@ use vulkano::{
     shader::EntryPoint,
 };
 
-pub mod brdf;
 pub mod conv;
 pub mod cube;
 pub mod equi;

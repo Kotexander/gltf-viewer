@@ -44,6 +44,8 @@ pub struct Raytracer {
     tlas: Option<Arc<AccelerationStructure>>,
     allocators: Allocators,
     pub view: Arc<ImageView>,
+
+    _blas: Vec<Arc<AccelerationStructure>>,
 }
 impl Raytracer {
     pub fn new(device: &Arc<Device>, allocators: Allocators) -> Self {
@@ -106,29 +108,42 @@ impl Raytracer {
             tlas: None,
             allocators,
             view,
+            _blas: vec![],
         }
     }
     pub fn build(&mut self, queue: Arc<Queue>, info: &GltfRenderInfo) {
-        let blas = info.meshes.iter().flat_map(|instances| {
-            instances.primatives().iter().map(|primitive| unsafe {
-                let blas = build_acceleration_structure_triangles(
-                    primitive.vbuf().clone(),
-                    primitive.ibuf().clone(),
-                    self.allocators.mem.clone(),
-                    self.allocators.cmd.clone(),
-                    queue.device().clone(),
-                    queue.clone(),
-                );
-                AccelerationStructureInstance {
-                    acceleration_structure_reference: blas.device_address().into(),
-                    ..Default::default()
-                }
+        let (blas, other): (Vec<_>, Vec<Vec<_>>) = info
+            .meshes
+            .iter()
+            .flat_map(|instances| {
+                instances.primatives().iter().map(|primitive| unsafe {
+                    let blas = build_acceleration_structure_triangles(
+                        primitive.vbuf().clone(),
+                        primitive.ibuf().clone(),
+                        self.allocators.mem.clone(),
+                        self.allocators.cmd.clone(),
+                        queue.device().clone(),
+                        queue.clone(),
+                    );
+                    (
+                        blas.clone(),
+                        instances
+                            .instances()
+                            .iter()
+                            .map(move |transform| AccelerationStructureInstance {
+                                acceleration_structure_reference: blas.device_address().into(),
+                                transform: transform.remove_row(3).transpose().into(),
+                                ..Default::default()
+                            })
+                            .collect(),
+                    )
+                })
             })
-        });
+            .collect();
 
         let tlas = unsafe {
             build_top_level_acceleration_structure(
-                blas.collect(),
+                other.concat(),
                 self.allocators.mem.clone(),
                 self.allocators.cmd.clone(),
                 queue.device().clone(),
@@ -137,6 +152,7 @@ impl Raytracer {
         };
 
         self.tlas = Some(tlas);
+        self._blas = blas;
     }
     pub fn render(&self, orbit_camera: OrbitCamera, aspect: f32, queue: Arc<Queue>) {
         if let Some(tlas) = self.tlas.clone() {
@@ -305,8 +321,7 @@ unsafe fn build_acceleration_structure_common(
                     .properties()
                     .min_acceleration_structure_scratch_offset_alignment
                     .unwrap()
-                    .try_into()
-                    .unwrap(),
+                    .into(),
             )
             .unwrap(),
         )

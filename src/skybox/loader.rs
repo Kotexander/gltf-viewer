@@ -12,7 +12,10 @@ use std::{path::Path, sync::Arc};
 use vulkano::{
     DeviceSize,
     buffer::{Buffer, BufferCreateInfo, BufferUsage},
-    command_buffer::{AutoCommandBufferBuilder, CopyBufferToImageInfo},
+    command_buffer::{
+        AutoCommandBufferBuilder, BlitImageInfo, CopyBufferToImageInfo, ImageBlit,
+        PrimaryAutoCommandBuffer,
+    },
     descriptor_set::{
         DescriptorSet, WriteDescriptorSet, allocator::StandardDescriptorSetAllocator,
         layout::DescriptorSetLayout,
@@ -20,8 +23,8 @@ use vulkano::{
     device::DeviceOwned,
     format::Format,
     image::{
-        Image, ImageCreateInfo, ImageType, ImageUsage,
-        sampler::{Sampler, SamplerCreateInfo},
+        Image, ImageCreateInfo, ImageSubresourceLayers, ImageType, ImageUsage,
+        sampler::{Filter, Sampler, SamplerCreateInfo},
         view::{ImageView, ImageViewCreateInfo, ImageViewType},
     },
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
@@ -76,10 +79,10 @@ impl SkyboxLoader {
         }
     }
 
-    pub fn load<L>(
+    pub fn load(
         &self,
         path: impl AsRef<Path>,
-        builder: &mut AutoCommandBufferBuilder<L>,
+        builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
     ) -> Result<(Arc<Image>, Arc<Image>, Arc<Image>), LoadSkyboxError> {
         // load equirectangular texture
         let equi = load_skybox(self.allocators.mem.clone(), path, builder)?;
@@ -105,9 +108,11 @@ impl SkyboxLoader {
         .unwrap();
 
         // render equirectangular texture to cubemap
-        let cube = create_cubemap_image(self.allocators.mem.clone(), equi.extent()[0] / 4, 1);
+        let mips = 5;
+        let cube = create_cubemap_image(self.allocators.mem.clone(), equi.extent()[0] / 4, mips);
         self.equirectangular_renderer
             .render(builder, &equi_set, &cube, 0);
+        gen_mipmaps(builder, cube.clone(), mips);
 
         // convolute cubemap
         let cube_set = cube_set(
@@ -115,11 +120,12 @@ impl SkyboxLoader {
             self.convolute_renderer.pipeline.layout().set_layouts()[1].clone(),
             cube.clone(),
         );
-        let conv = create_cubemap_image(self.allocators.mem.clone(), 8, 1);
+        let conv = create_cubemap_image(self.allocators.mem.clone(), 32, 1);
         self.convolute_renderer.render(builder, &cube_set, &conv, 0);
 
+        // don't change mips since shader expects it to be 5
         let mips = 5;
-        // don't change size since shader expects texture to be this size
+        // don't change size since shader expects texture to be 512x512
         let filt = create_cubemap_image(self.allocators.mem.clone(), 512, mips);
         for mip in 0..mips {
             let roughness = mip as f32 / (mips - 1) as f32;
@@ -134,8 +140,7 @@ impl SkyboxLoader {
         }
 
         Ok((cube, conv, filt))
-        // Ok((filt, conv))
-        // Ok((conv.clone(), conv))
+        // Ok((filt.clone(), conv, filt))
     }
 }
 
@@ -233,4 +238,38 @@ pub fn cube_set(
         [],
     )
     .unwrap()
+}
+
+pub fn gen_mipmaps<L>(builder: &mut AutoCommandBufferBuilder<L>, image: Arc<Image>, mips: u32) {
+    let w = image.extent()[0];
+    let h = image.extent()[1];
+    for layer in 0..6u32 {
+        for mip in 1..mips {
+            builder
+                .blit_image(BlitImageInfo {
+                    filter: Filter::Linear,
+                    regions: [ImageBlit {
+                        src_subresource: ImageSubresourceLayers {
+                            mip_level: mip - 1,
+                            array_layers: layer..layer + 1,
+                            ..image.subresource_layers()
+                        },
+                        dst_subresource: ImageSubresourceLayers {
+                            mip_level: mip,
+                            array_layers: layer..layer + 1,
+                            ..image.subresource_layers()
+                        },
+                        src_offsets: [
+                            [0, 0, 0],
+                            [(w >> (mip - 1)).max(1), (h >> (mip - 1)).max(1), 1],
+                        ],
+                        dst_offsets: [[0, 0, 0], [(w >> mip).max(1), (h >> mip).max(1), 1]],
+                        ..Default::default()
+                    }]
+                    .into(),
+                    ..BlitImageInfo::images(image.clone(), image.clone())
+                })
+                .unwrap();
+        }
+    }
 }

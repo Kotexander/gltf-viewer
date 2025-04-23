@@ -131,14 +131,7 @@ impl CubemapRenderPipeline {
                 .into(),
             )
             .unwrap()
-            .set_scissor(
-                0,
-                vec![Scissor {
-                    extent: [mip_width, mip_height],
-                    ..Default::default()
-                }]
-                .into(),
-            )
+            .set_scissor(0, vec![Scissor::default()].into())
             .unwrap();
 
         let views = (0..6).map(|i| {
@@ -163,6 +156,7 @@ impl CubemapRenderPipeline {
                 self.renderer.subpass.render_pass().clone(),
                 FramebufferCreateInfo {
                     attachments: vec![view.clone()],
+                    extent: [mip_width, mip_height],
                     ..Default::default()
                 },
             )
@@ -204,7 +198,13 @@ pub fn create_cubemap_image(
         allocator,
         ImageCreateInfo {
             flags: ImageCreateFlags::CUBE_COMPATIBLE,
-            usage: ImageUsage::COLOR_ATTACHMENT | ImageUsage::SAMPLED,
+            usage: ImageUsage::COLOR_ATTACHMENT
+                | ImageUsage::SAMPLED
+                | if mips > 0 {
+                    ImageUsage::TRANSFER_SRC | ImageUsage::TRANSFER_DST
+                } else {
+                    ImageUsage::empty()
+                },
             image_type: ImageType::Dim2d,
             array_layers: 6,
             extent: [size, size, 1],

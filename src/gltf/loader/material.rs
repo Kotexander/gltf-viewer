@@ -90,7 +90,7 @@ impl Material {
 
         let normal = if let Some(normal) = material.normal_texture() {
             tex_sets.nm = Some(normal.tex_coord());
-            loader.get_texture(normal.texture(), true, images)
+            loader.get_texture(normal.texture(), false, images)
         } else {
             loader.get_default_texture()
         };

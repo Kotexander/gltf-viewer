@@ -4,14 +4,7 @@ use renderer::ViewerRenderer;
 use std::{path::PathBuf, sync::Arc, thread::JoinHandle};
 use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract},
-    descriptor_set::{DescriptorSet, WriteDescriptorSet},
     device::Queue,
-    image::{
-        Image,
-        sampler::{Sampler, SamplerCreateInfo},
-        view::{ImageView, ImageViewCreateInfo, ImageViewType},
-    },
-    pipeline::Pipeline,
     render_pass::Subpass,
     sync::GpuFuture,
 };
@@ -25,8 +18,13 @@ pub struct Viewer {
     pub job: Option<JoinHandle<GltfRenderInfo>>,
 }
 impl Viewer {
-    pub fn new(allocators: &Allocators, set_layouts: &SetLayouts, subpass: Subpass) -> Self {
-        let renderer = ViewerRenderer::new(allocators, set_layouts, subpass);
+    pub fn new<L>(
+        allocators: &Allocators,
+        builder: &mut AutoCommandBufferBuilder<L>,
+        set_layouts: &SetLayouts,
+        subpass: Subpass,
+    ) -> Self {
+        let renderer = ViewerRenderer::new(allocators, builder, set_layouts, subpass);
         let loader = ViewerLoader {
             allocators: allocators.clone(),
             material_set_layout: set_layouts.material.clone(),
@@ -79,50 +77,5 @@ impl Viewer {
         } else {
             false
         }
-    }
-    pub fn new_env(&mut self, diffuse: Arc<Image>, specular: Arc<Image>) {
-        let diffuse_view = ImageView::new(
-            diffuse.clone(),
-            ImageViewCreateInfo {
-                view_type: ImageViewType::Cube,
-                ..ImageViewCreateInfo::from_image(&diffuse)
-            },
-        )
-        .unwrap();
-        let specular_view = ImageView::new(
-            specular.clone(),
-            ImageViewCreateInfo {
-                view_type: ImageViewType::Cube,
-                ..ImageViewCreateInfo::from_image(&specular)
-            },
-        )
-        .unwrap();
-        let env_set = DescriptorSet::new(
-            self.loader.allocators.set.clone(),
-            self.renderer.pipeline.pipeline.layout().set_layouts()[1].clone(),
-            [
-                WriteDescriptorSet::image_view_sampler(
-                    0,
-                    diffuse_view,
-                    Sampler::new(
-                        self.renderer.pipeline.pipeline.device().clone(),
-                        SamplerCreateInfo::simple_repeat_linear(),
-                    )
-                    .unwrap(),
-                ),
-                WriteDescriptorSet::image_view_sampler(
-                    1,
-                    specular_view,
-                    Sampler::new(
-                        self.renderer.pipeline.pipeline.device().clone(),
-                        SamplerCreateInfo::simple_repeat_linear(),
-                    )
-                    .unwrap(),
-                ),
-            ],
-            [],
-        )
-        .unwrap();
-        self.renderer.env_set = env_set;
     }
 }

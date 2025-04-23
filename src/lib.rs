@@ -188,7 +188,9 @@ impl State {
             CommandBufferUsage::OneTimeSubmit,
         )
         .unwrap();
+
         let skybox = Skybox::new(allocators, &mut builder, &set_layouts, subpass.clone());
+        let viewer = Viewer::new(allocators, &mut builder, &set_layouts, subpass);
 
         builder
             .build()
@@ -199,8 +201,6 @@ impl State {
             .unwrap()
             .wait(None)
             .unwrap();
-
-        let viewer = Viewer::new(allocators, &set_layouts, subpass);
 
         let raytracer = Raytracer::new(queue.device(), allocators.clone());
 
@@ -218,7 +218,7 @@ impl State {
     }
     pub fn update<L>(&mut self, builder: &mut AutoCommandBufferBuilder<L>, index: usize) {
         if let Some((conv, filt)) = self.skybox.update() {
-            self.viewer.new_env(conv, filt);
+            self.viewer.renderer.new_env(conv, filt);
         }
         if self.viewer.update() {
             self.raytracer.build(

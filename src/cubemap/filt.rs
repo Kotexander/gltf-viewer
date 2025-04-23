@@ -134,9 +134,6 @@ void main(){
 
             prefiltered_color += textureLod(envMap, L, mipLevel).rgb * n_dot_l;
             total_weight      += n_dot_l;
-
-            // prefiltered_color += texture(envMap, L).rgb * n_dot_l;
-            // total_weight      += n_dot_l;
         }
     }
 

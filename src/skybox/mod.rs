@@ -3,18 +3,13 @@ use crate::{
     cubemap::{CubeMesh, CubemapPipelineBuilder, CubemapVertexShader, cubemap_pipeline_layout},
     set_layouts::SetLayouts,
 };
-use loader::SkyboxLoader;
+use loader::{SkyboxLoader, cube_set};
 use renderer::SkyboxRenderer;
 use std::{path::PathBuf, sync::Arc, thread::JoinHandle};
 use vulkano::{
     command_buffer::{AutoCommandBufferBuilder, CommandBufferUsage, PrimaryCommandBufferAbstract},
-    descriptor_set::{DescriptorSet, WriteDescriptorSet},
     device::{DeviceOwned, Queue},
-    image::{
-        Image,
-        sampler::{Sampler, SamplerCreateInfo},
-        view::{ImageView, ImageViewCreateInfo, ImageViewType},
-    },
+    image::Image,
     pipeline::Pipeline,
     render_pass::Subpass,
     sync::GpuFuture,
@@ -101,29 +96,11 @@ impl Skybox {
             .take_if(|job| job.is_finished())
             .map(|job| job.join().unwrap())
         {
-            let cube_view = ImageView::new(
-                cube.clone(),
-                ImageViewCreateInfo {
-                    view_type: ImageViewType::Cube,
-                    ..ImageViewCreateInfo::from_image(&cube)
-                },
-            )
-            .unwrap();
-            let cube_set = DescriptorSet::new(
+            let cube_set = cube_set(
                 self.loader.allocators.set.clone(),
                 self.renderer.pipeline.layout().set_layouts()[1].clone(),
-                [WriteDescriptorSet::image_view_sampler(
-                    0,
-                    cube_view.clone(),
-                    Sampler::new(
-                        self.loader.allocators.mem.device().clone(),
-                        SamplerCreateInfo::simple_repeat_linear(),
-                    )
-                    .unwrap(),
-                )],
-                [],
-            )
-            .unwrap();
+                cube,
+            );
             self.renderer.skybox = Some(cube_set);
             Some((conv, filt))
         } else {

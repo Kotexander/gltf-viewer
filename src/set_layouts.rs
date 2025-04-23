@@ -75,7 +75,7 @@ impl SetLayouts {
         let environment = DescriptorSetLayout::new(
             device,
             DescriptorSetLayoutCreateInfo {
-                bindings: BTreeMap::from([texture_layout(0), texture_layout(1)]),
+                bindings: BTreeMap::from([texture_layout(0), texture_layout(1), texture_layout(2)]),
                 ..Default::default()
             },
         )

@@ -39,11 +39,11 @@ void main() {
     up         = normalize(cross(N, right));
 
     float samples = 0.0;
-    for(float phi = 0.0; phi < 2.0 * PI; phi += 0.1){
+    for(float phi = 0.0; phi < 2.0 * PI; phi += 0.01){
         float cos_phi = cos(phi);
         float sin_phi = sin(phi);
 
-        for(float theta = 0.0; theta < 0.5 * PI; theta += 0.1){
+        for(float theta = 0.0; theta < 0.5 * PI; theta += 0.01){
             float cos_theta = cos(theta);
             float sin_theta = sin(theta);
 
