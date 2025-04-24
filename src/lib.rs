@@ -325,11 +325,11 @@ impl State {
                 let viewer = self.viewer.renderer.clone();
                 let camera_set = self.cameras[index].set.clone();
 
-                self.raytracer
-                    .resize([rect.width() as u32, rect.height() as u32]);
-                let raytracer = self.raytracer.clone();
-                let camera = self.camera;
-                let aspect = self.aspect;
+                // self.raytracer
+                //     .resize([rect.width() as u32, rect.height() as u32]);
+                // let raytracer = self.raytracer.clone();
+                // let camera = self.camera;
+                // let aspect = self.aspect;
                 let callback = egui::PaintCallback {
                     rect,
                     callback: Arc::new(CallbackFn::new(move |_info, context| {
@@ -344,7 +344,7 @@ impl State {
                             .unwrap();
                         viewer.render(context.builder);
                         skybox.render(context.builder);
-                        raytracer.render(camera, aspect, context.resources.queue.clone());
+                        // raytracer.render(camera, aspect, context.resources.queue.clone());
                     })),
                 };
                 ui.painter().add(callback);

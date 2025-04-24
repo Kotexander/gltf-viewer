@@ -10,7 +10,7 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
 };
 
-#[derive(Default, Clone)]
+#[derive(Debug, Default, Clone)]
 pub struct TextureSets {
     pub bc: Option<u32>,
     pub rm: Option<u32>,

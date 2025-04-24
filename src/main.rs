@@ -10,7 +10,7 @@ use vulkano::{
     descriptor_set::allocator::StandardDescriptorSetAllocator,
     device::{DeviceExtensions, DeviceFeatures},
     format::Format,
-    image::{ImageUsage, sampler::SamplerCreateInfo},
+    image::ImageUsage,
     instance::{
         InstanceCreateInfo,
         debug::{
@@ -238,14 +238,6 @@ impl ApplicationHandler for App {
 
                 window.gui.immediate_ui(|gui| {
                     window.state.show(&gui.egui_ctx, frame_index);
-                    let id = gui.register_user_image_view(
-                        window.state.raytracer.view.clone(),
-                        SamplerCreateInfo::simple_repeat_linear_no_mipmap(),
-                    );
-
-                    egui::Window::new("Preview").show(&gui.egui_ctx, |ui| {
-                        ui.image((id, ui.available_size()));
-                    });
                 });
 
                 match renderer.acquire(None, |views| {

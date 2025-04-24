@@ -17,6 +17,8 @@ pub struct PrimitiveVertex {
     pub position: glm::Vec3,
     #[format(R32G32B32_SFLOAT)]
     pub normal: glm::Vec3,
+    #[format(R32G32B32_SFLOAT)]
+    pub tangent: glm::Vec3,
     #[format(R32G32_SFLOAT)]
     pub bc_tex: glm::Vec2,
     #[format(R32G32_SFLOAT)]
@@ -52,6 +54,7 @@ impl Primitive {
             .map(|(pos, norm)| PrimitiveVertex {
                 position: pos.into(),
                 normal: norm.into(),
+                tangent: glm::Vec3::zeros(),
                 bc_tex: glm::Vec2::zeros(),
                 rm_tex: glm::Vec2::zeros(),
                 ao_tex: glm::Vec2::zeros(),
@@ -59,7 +62,15 @@ impl Primitive {
                 nm_tex: glm::Vec2::zeros(),
             })
             .collect();
-        let indices = reader.read_indices().unwrap().into_u32();
+        for (i, tangent) in reader
+            .read_tangents()
+            .into_iter()
+            .flat_map(|tangents| tangents)
+            .enumerate()
+        {
+            vertices[i].tangent = glm::vec3(tangent[0], tangent[1], tangent[2]);
+        }
+        let indices: Vec<_> = reader.read_indices().unwrap().into_u32().collect();
 
         let material = loader.get_material(primitive.material(), images);
 
@@ -86,6 +97,35 @@ impl Primitive {
         if let Some(set) = material.tex_sets.nm {
             for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
                 vertices[i].nm_tex = tex.into();
+            }
+        }
+
+        if reader.read_tangents().is_none() {
+            let mut triangles_included = vec![0; vertices.len()];
+            for i in indices.chunks_exact(3) {
+                let v0 = &vertices[i[0] as usize];
+                let v1 = &vertices[i[1] as usize];
+                let v2 = &vertices[i[2] as usize];
+
+                let dp1 = v1.position - v0.position;
+                let dp2 = v2.position - v0.position;
+
+                let duv1 = v1.nm_tex - v0.nm_tex;
+                let duv2 = v2.nm_tex - v0.nm_tex;
+
+                let r = duv1.x * duv2.y - duv2.x * duv1.y;
+                let tangent = (dp1 * duv2.y - dp2 * duv1.y) / r;
+
+                vertices[i[0] as usize].tangent += tangent;
+                vertices[i[1] as usize].tangent += tangent;
+                vertices[i[2] as usize].tangent += tangent;
+
+                triangles_included[i[0] as usize] += 1;
+                triangles_included[i[1] as usize] += 1;
+                triangles_included[i[2] as usize] += 1;
+            }
+            for (vertex, num) in vertices.iter_mut().zip(triangles_included.into_iter()) {
+                vertex.tangent /= num as f32;
             }
         }
 

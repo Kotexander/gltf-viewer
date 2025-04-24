@@ -2,11 +2,12 @@
 
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 normal;
-layout(location = 2) in vec2 bc_tex;
-layout(location = 3) in vec2 rm_tex;
-layout(location = 4) in vec2 ao_tex;
-layout(location = 5) in vec2 em_tex;
-layout(location = 6) in vec2 nm_tex;
+layout(location = 2) in vec3 tangent;
+layout(location = 3) in vec2 bc_tex;
+layout(location = 4) in vec2 rm_tex;
+layout(location = 5) in vec2 ao_tex;
+layout(location = 6) in vec2 em_tex;
+layout(location = 7) in vec2 nm_tex;
 
 layout(location = 0) out vec4 f_color;
 
@@ -85,13 +86,18 @@ vec3 pbr_neutral_tone_mapping(vec3 color) {
 }
 
 void main() {
+    vec3 n = normalize(normal);
+    vec3 t = normalize(tangent);
+    vec3 b = cross(n, t);
+    mat3 tbn = mat3(t, b, n);
+
     float ao = texture(ao_sampler, ao_tex).r * f.ao;
     vec3 albedo = texture(bc_sampler, bc_tex).rgb * f.bc.rgb;
     vec2 rm = texture(rm_sampler, rm_tex).gb * f.rm;
     vec3 em = texture(em_sampler, em_tex).rgb * f.em;
 
-    vec3 N = normalize(normal);
     vec3 V = normalize(cam.view_inv[3].xyz - position);
+    vec3 N = tbn * (texture(nm_sampler, nm_tex).rgb * 2.0 - 1.0);
     vec3 R = reflect(-V, N);
     vec3 f0 = mix(vec3(0.04), albedo, rm.y);
 
@@ -108,6 +114,6 @@ void main() {
 
     vec3 ambient = (diffuse + specular) * ao;
     vec3 color = ambient + em;
-    // f_color = vec4(pbr_neutral_tone_mapping(color), 1.0);
-    f_color = vec4(color, 1.0);
+    f_color = vec4(pbr_neutral_tone_mapping(color), 1.0);
+    // f_color = vec4((N + 1.0) / 2.0, 1.0);
 }
