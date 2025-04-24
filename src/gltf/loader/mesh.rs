@@ -1,7 +1,6 @@
-use std::sync::Arc;
-
 use super::Loader;
 use nalgebra_glm as glm;
+use std::sync::Arc;
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{AutoCommandBufferBuilder, CopyBufferInfo},
@@ -11,24 +10,131 @@ use vulkano::{
 };
 
 #[repr(C)]
-#[derive(BufferContents, Vertex, Debug)]
+#[derive(Debug, Default, BufferContents, Vertex)]
 pub struct PrimitiveVertex {
     #[format(R32G32B32_SFLOAT)]
     pub position: glm::Vec3,
     #[format(R32G32B32_SFLOAT)]
     pub normal: glm::Vec3,
-    #[format(R32G32B32_SFLOAT)]
-    pub tangent: glm::Vec3,
+    #[format(R32G32B32A32_SFLOAT)]
+    pub tangent: glm::Vec4,
     #[format(R32G32_SFLOAT)]
-    pub bc_tex: glm::Vec2,
+    pub uv_0: glm::Vec2,
     #[format(R32G32_SFLOAT)]
-    pub rm_tex: glm::Vec2,
-    #[format(R32G32_SFLOAT)]
-    pub ao_tex: glm::Vec2,
-    #[format(R32G32_SFLOAT)]
-    pub em_tex: glm::Vec2,
-    #[format(R32G32_SFLOAT)]
-    pub nm_tex: glm::Vec2,
+    pub uv_1: glm::Vec2,
+}
+
+struct VertexData<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> {
+    vertices: Vec<PrimitiveVertex>,
+    indices: Vec<u32>,
+    reader: gltf::mesh::Reader<'a, 's, F>,
+}
+impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> VertexData<'a, 's, F> {
+    fn new(reader: gltf::mesh::Reader<'a, 's, F>) -> Option<Self> {
+        // get positions or return None if they don't exist and ignore the primitve
+        let vertices: Vec<_> = reader
+            .read_positions()?
+            .map(|pos| PrimitiveVertex {
+                position: pos.into(),
+                ..Default::default()
+            })
+            .collect();
+        // get indices or assign each vertex an index
+        let indices: Vec<_> = reader
+            .read_indices()
+            .map(|i| i.into_u32().collect())
+            .unwrap_or_else(|| (0..vertices.len() as u32).collect());
+
+        Some(Self {
+            vertices,
+            indices,
+            reader,
+        })
+    }
+    fn set_normals(&mut self) {
+        match self.reader.read_normals() {
+            // use provided normals
+            Some(normals) => {
+                for (i, normal) in normals.enumerate() {
+                    self.vertices[i].normal = normal.into();
+                }
+            }
+            // calculate flat normals
+            None => {
+                unimplemented!("calculate flat normals and ignore provided tangents")
+            }
+        }
+    }
+    fn set_textures_sets(&mut self) {
+        for (i, tex) in self
+            .reader
+            .read_tex_coords(0)
+            .into_iter()
+            .flat_map(|iter| iter.into_f32())
+            .enumerate()
+        {
+            self.vertices[i].uv_0 = tex.into();
+        }
+        for (i, tex) in self
+            .reader
+            .read_tex_coords(1)
+            .into_iter()
+            .flat_map(|iter| iter.into_f32())
+            .enumerate()
+        {
+            self.vertices[i].uv_1 = tex.into();
+        }
+    }
+    fn set_tangents(&mut self) {
+        match self.reader.read_tangents() {
+            // use provided tangents
+            Some(tangents) => {
+                for (i, tangent) in tangents.enumerate() {
+                    self.vertices[i].tangent = tangent.into();
+                }
+            }
+            None => {
+                assert!(
+                    mikktspace::generate_tangents(self),
+                    "generating tangents failed"
+                );
+            }
+        }
+    }
+}
+impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> mikktspace::Geometry
+    for VertexData<'a, 's, F>
+{
+    fn num_faces(&self) -> usize {
+        self.indices.len() / 3
+    }
+
+    fn num_vertices_of_face(&self, _face: usize) -> usize {
+        3
+    }
+
+    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
+        self.vertices[self.indices[face * 3 + vert] as usize]
+            .position
+            .into()
+    }
+
+    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
+        self.vertices[self.indices[face * 3 + vert] as usize]
+            .normal
+            .into()
+    }
+
+    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
+        // todo!("use correct tex coord set");
+        self.vertices[self.indices[face * 3 + vert] as usize]
+            .uv_0
+            .into()
+    }
+
+    fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
+        self.vertices[self.indices[face * 3 + vert] as usize].tangent = tangent.into()
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -44,89 +150,16 @@ impl Primitive {
         buffers: &[gltf::buffer::Data],
         images: &mut [Option<::image::RgbaImage>],
         loader: &mut Loader,
-    ) -> Self {
+    ) -> Option<Self> {
         let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice()));
 
-        let mut vertices: Vec<_> = reader
-            .read_positions()
-            .unwrap()
-            .zip(reader.read_normals().unwrap())
-            .map(|(pos, norm)| PrimitiveVertex {
-                position: pos.into(),
-                normal: norm.into(),
-                tangent: glm::Vec3::zeros(),
-                bc_tex: glm::Vec2::zeros(),
-                rm_tex: glm::Vec2::zeros(),
-                ao_tex: glm::Vec2::zeros(),
-                em_tex: glm::Vec2::zeros(),
-                nm_tex: glm::Vec2::zeros(),
-            })
-            .collect();
-        for (i, tangent) in reader
-            .read_tangents()
-            .into_iter()
-            .flat_map(|tangents| tangents)
-            .enumerate()
-        {
-            vertices[i].tangent = glm::vec3(tangent[0], tangent[1], tangent[2]);
-        }
-        let indices: Vec<_> = reader.read_indices().unwrap().into_u32().collect();
+        let mut vertex_data = VertexData::new(reader)?;
+        vertex_data.set_normals();
+        vertex_data.set_textures_sets();
 
         let material = loader.get_material(primitive.material(), images);
-
-        if let Some(set) = material.tex_sets.bc {
-            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
-                vertices[i].bc_tex = tex.into();
-            }
-        }
-        if let Some(set) = material.tex_sets.rm {
-            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
-                vertices[i].rm_tex = tex.into();
-            }
-        }
-        if let Some(set) = material.tex_sets.ao {
-            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
-                vertices[i].ao_tex = tex.into();
-            }
-        }
-        if let Some(set) = material.tex_sets.em {
-            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
-                vertices[i].em_tex = tex.into();
-            }
-        }
-        if let Some(set) = material.tex_sets.nm {
-            for (i, tex) in reader.read_tex_coords(set).unwrap().into_f32().enumerate() {
-                vertices[i].nm_tex = tex.into();
-            }
-        }
-
-        if reader.read_tangents().is_none() {
-            let mut triangles_included = vec![0; vertices.len()];
-            for i in indices.chunks_exact(3) {
-                let v0 = &vertices[i[0] as usize];
-                let v1 = &vertices[i[1] as usize];
-                let v2 = &vertices[i[2] as usize];
-
-                let dp1 = v1.position - v0.position;
-                let dp2 = v2.position - v0.position;
-
-                let duv1 = v1.nm_tex - v0.nm_tex;
-                let duv2 = v2.nm_tex - v0.nm_tex;
-
-                let r = duv1.x * duv2.y - duv2.x * duv1.y;
-                let tangent = (dp1 * duv2.y - dp2 * duv1.y) / r;
-
-                vertices[i[0] as usize].tangent += tangent;
-                vertices[i[1] as usize].tangent += tangent;
-                vertices[i[2] as usize].tangent += tangent;
-
-                triangles_included[i[0] as usize] += 1;
-                triangles_included[i[1] as usize] += 1;
-                triangles_included[i[2] as usize] += 1;
-            }
-            for (vertex, num) in vertices.iter_mut().zip(triangles_included.into_iter()) {
-                vertex.tangent /= num as f32;
-            }
+        if material.uniform.nm_set >= 0 {
+            vertex_data.set_tangents();
         }
 
         let vbuf_stage = Buffer::from_iter(
@@ -140,7 +173,7 @@ impl Primitive {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            vertices,
+            vertex_data.vertices,
         )
         .unwrap();
         let ibuf_stage = Buffer::from_iter(
@@ -154,17 +187,16 @@ impl Primitive {
                     | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
                 ..Default::default()
             },
-            indices,
+            vertex_data.indices,
         )
         .unwrap();
 
         let vbuf = Buffer::new_slice(
             loader.allocators.mem.clone(),
             BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST
-                    | BufferUsage::VERTEX_BUFFER
-                    | BufferUsage::SHADER_DEVICE_ADDRESS
-                    | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
+                usage: BufferUsage::TRANSFER_DST | BufferUsage::VERTEX_BUFFER,
+                // | BufferUsage::SHADER_DEVICE_ADDRESS
+                // | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
                 ..Default::default()
             },
             AllocationCreateInfo::default(),
@@ -174,10 +206,9 @@ impl Primitive {
         let ibuf = Buffer::new_slice(
             loader.allocators.mem.clone(),
             BufferCreateInfo {
-                usage: BufferUsage::TRANSFER_DST
-                    | BufferUsage::INDEX_BUFFER
-                    | BufferUsage::SHADER_DEVICE_ADDRESS
-                    | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
+                usage: BufferUsage::TRANSFER_DST | BufferUsage::INDEX_BUFFER,
+                // | BufferUsage::SHADER_DEVICE_ADDRESS
+                // | BufferUsage::ACCELERATION_STRUCTURE_BUILD_INPUT_READ_ONLY,
                 ..Default::default()
             },
             AllocationCreateInfo::default(),
@@ -194,12 +225,12 @@ impl Primitive {
             .copy_buffer(CopyBufferInfo::buffers(ibuf_stage, ibuf.clone()))
             .unwrap();
 
-        Self {
+        Some(Self {
             ilen: ibuf.len() as u32,
             vbuf,
             ibuf,
             material_set: material.set.clone(),
-        }
+        })
     }
     pub fn render<L>(
         self,
@@ -219,12 +250,12 @@ impl Primitive {
         builder.bind_index_buffer(self.ibuf).unwrap();
         unsafe { builder.draw_indexed(self.ilen, instances, 0, 0, 0) }.unwrap();
     }
-    pub fn vbuf(&self) -> &Subbuffer<[PrimitiveVertex]> {
-        &self.vbuf
-    }
-    pub fn ibuf(&self) -> &Subbuffer<[u32]> {
-        &self.ibuf
-    }
+    // pub fn vbuf(&self) -> &Subbuffer<[PrimitiveVertex]> {
+    //     &self.vbuf
+    // }
+    // pub fn ibuf(&self) -> &Subbuffer<[u32]> {
+    //     &self.ibuf
+    // }
 }
 
 #[derive(Debug)]
@@ -248,15 +279,15 @@ impl Mesh {
                     log::warn!("triangle primitives allowed only for now. skipping.");
                     None
                 } else {
-                    Some(Primitive::from_loader(primitive, buffers, images, loader))
+                    let primitve = Primitive::from_loader(primitive, buffers, images, loader);
+                    if primitve.is_none() {
+                        log::warn!("a primitive couldn't be built. skipping.");
+                    }
+                    primitve
                 }
             })
             .collect();
 
-        Self {
-            // index: mesh.index(),
-            // name: mesh.name().map(String::from),
-            primitives,
-        }
+        Self { primitives }
     }
 }

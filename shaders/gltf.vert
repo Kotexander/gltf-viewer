@@ -2,17 +2,14 @@
 
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 normal;
-layout(location = 2) in vec3 tangent;
-layout(location = 3) in vec2 bc_tex;
-layout(location = 4) in vec2 rm_tex;
-layout(location = 5) in vec2 ao_tex;
-layout(location = 6) in vec2 em_tex;
-layout(location = 7) in vec2 nm_tex;
+layout(location = 2) in vec4 tangent;
+layout(location = 3) in vec2 uv_0;
+layout(location = 4) in vec2 uv_1;
 
-layout(location = 8) in vec4 model_x;
-layout(location = 9) in vec4 model_y;
-layout(location = 10) in vec4 model_z;
-layout(location = 11) in vec4 model_w;
+layout(location = 5) in vec4 model_x;
+layout(location = 6) in vec4 model_y;
+layout(location = 7) in vec4 model_z;
+layout(location = 8) in vec4 model_w;
 
 layout(set = 0, binding = 0) uniform Camera {
     mat4 view;
@@ -23,25 +20,21 @@ layout(set = 0, binding = 0) uniform Camera {
 layout(location = 0) out vec3 f_position;
 layout(location = 1) out vec3 f_normal;
 layout(location = 2) out vec3 f_tangent;
-layout(location = 3) out vec2 f_bc_tex;
-layout(location = 4) out vec2 f_rm_tex;
-layout(location = 5) out vec2 f_ao_tex;
-layout(location = 6) out vec2 f_em_tex;
-layout(location = 7) out vec2 f_nm_tex;
+layout(location = 3) out vec3 f_bitangent;
+layout(location = 4) out vec2 f_uv_0;
+layout(location = 5) out vec2 f_uv_1;
 
 void main() {
     mat4 model = mat4(model_x, model_y, model_z, model_w);
-    mat3 normalMat = transpose(inverse(mat3(model)));
+    mat3 model_inv_t = transpose(inverse(mat3(model)));
     vec4 pos = model * vec4(position, 1.0);
 
     f_position = pos.xyz;
-    f_normal = normalMat * normal;
-    f_tangent = normalMat * tangent;
-    f_bc_tex = bc_tex;
-    f_rm_tex = rm_tex;
-    f_ao_tex = ao_tex;
-    f_em_tex = em_tex;
-    f_nm_tex = nm_tex;
+    f_normal = model_inv_t * normal;
+    f_tangent = model_inv_t * tangent.xyz;
+    f_bitangent = cross(f_normal, f_tangent);
+    f_uv_0 = uv_0;
+    f_uv_1 = uv_1;
 
     gl_Position = cam.proj * cam.view * pos;
 }

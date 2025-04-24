@@ -3,11 +3,9 @@
 layout(location = 0) in vec3 position;
 layout(location = 1) in vec3 normal;
 layout(location = 2) in vec3 tangent;
-layout(location = 3) in vec2 bc_tex;
-layout(location = 4) in vec2 rm_tex;
-layout(location = 5) in vec2 ao_tex;
-layout(location = 6) in vec2 em_tex;
-layout(location = 7) in vec2 nm_tex;
+layout(location = 3) in vec3 bitangent;
+layout(location = 4) in vec2 uv_0;
+layout(location = 5) in vec2 uv_1;
 
 layout(location = 0) out vec4 f_color;
 
@@ -21,17 +19,48 @@ layout(set = 1, binding = 0) uniform samplerCube envMap;
 layout(set = 1, binding = 1) uniform samplerCube spcMap;
 layout(set = 1, binding = 2) uniform sampler2D lutMap;
 
-layout(set = 2, binding = 0) uniform Factors {
+layout(set = 2, binding = 0) uniform Material {
     vec4 bc;
     vec3 em;
     float ao;
     vec2 rm;
-} f;
+    float nm;
+
+    int bc_set;
+    int rm_set;
+    int ao_set;
+    int em_set;
+    int nm_set;
+} m;
 layout(set = 2, binding = 1) uniform sampler2D bc_sampler;
 layout(set = 2, binding = 2) uniform sampler2D rm_sampler;
 layout(set = 2, binding = 3) uniform sampler2D ao_sampler;
 layout(set = 2, binding = 4) uniform sampler2D em_sampler;
 layout(set = 2, binding = 5) uniform sampler2D nm_sampler;
+
+vec2 get_uv(uint set) {
+    if (set == 0) {
+        return uv_0;
+    }
+    else {
+        return uv_1;
+    }
+}
+vec3 get_base_color() {
+    return texture(bc_sampler, get_uv(m.bc_set)).rgb * m.bc.rgb;
+}
+vec2 get_roughness_metallic() {
+    return texture(rm_sampler, get_uv(m.rm_set)).gb * m.rm;
+}
+float get_ambient_occlusion() {
+    return 1.0 + m.ao * (texture(ao_sampler, get_uv(m.ao_set)).r - 1.0);
+}
+vec3 get_emmissive() {
+    return texture(em_sampler, get_uv(m.em_set)).rgb * m.em;
+}
+vec3 get_normal_map() {
+    return normalize((texture(nm_sampler, get_uv(m.nm_set)).rgb * 2.0 - 1.0) * vec3(m.nm, m.nm, 1.0));
+}
 
 const float PI = 3.14159265358979323846264338327950288;
 
@@ -86,27 +115,33 @@ vec3 pbr_neutral_tone_mapping(vec3 color) {
 }
 
 void main() {
+    vec3 N;
     vec3 n = normalize(normal);
-    vec3 t = normalize(tangent);
-    vec3 b = cross(n, t);
-    mat3 tbn = mat3(t, b, n);
+    if (m.nm_set >= 0) {
+        vec3 t = normalize(tangent);
+        vec3 b = normalize(bitangent);
+        mat3 tbn = mat3(t, b, n);
+        N = tbn * get_normal_map();
+    }
+    else {
+        N = n;
+    }
 
-    float ao = texture(ao_sampler, ao_tex).r * f.ao;
-    vec3 albedo = texture(bc_sampler, bc_tex).rgb * f.bc.rgb;
-    vec2 rm = texture(rm_sampler, rm_tex).gb * f.rm;
-    vec3 em = texture(em_sampler, em_tex).rgb * f.em;
+    vec3 bc = get_base_color();
+    float ao = get_ambient_occlusion();
+    vec2 rm = get_roughness_metallic();
+    vec3 em = get_emmissive();
 
     vec3 V = normalize(cam.view_inv[3].xyz - position);
-    vec3 N = tbn * (texture(nm_sampler, nm_tex).rgb * 2.0 - 1.0);
     vec3 R = reflect(-V, N);
-    vec3 f0 = mix(vec3(0.04), albedo, rm.y);
+    vec3 f0 = mix(vec3(0.04), bc, rm.y);
 
     float n_dot_v = max(dot(N, V), 0.0);
 
     vec3 f = fresnel_shlick(n_dot_v, f0, rm.x);
     vec3 kd = (1.0 - f) * (1.0 - rm.y);
 
-    vec3 diffuse = texture(envMap, N).rgb * albedo * kd;
+    vec3 diffuse = texture(envMap, N).rgb * bc * kd;
 
     const float MAX_REFLECTION_LOD = 4.0;
     vec2 brdf = texture(lutMap, vec2(n_dot_v, rm.x)).rg;
@@ -116,4 +151,5 @@ void main() {
     vec3 color = ambient + em;
     f_color = vec4(pbr_neutral_tone_mapping(color), 1.0);
     // f_color = vec4((N + 1.0) / 2.0, 1.0);
+    // f_color = vec4((n + 1.0) / 2.0, 1.0);
 }

@@ -54,17 +54,17 @@ impl From<glm::Mat4> for Instance {
 pub struct InstancedMesh {
     primitives: Vec<Primitive>,
     instance_buffer: Subbuffer<[Instance]>,
-    instances: Vec<glm::Mat4>,
+    // instances: Vec<glm::Mat4>,
     len: u32,
 }
-impl InstancedMesh {
-    pub fn primatives(&self) -> &[Primitive] {
-        &self.primitives
-    }
-    pub fn instances(&self) -> &[glm::Mat4] {
-        &self.instances
-    }
-}
+// impl InstancedMesh {
+//     pub fn primatives(&self) -> &[Primitive] {
+//         &self.primitives
+//     }
+//     pub fn instances(&self) -> &[glm::Mat4] {
+//         &self.instances
+//     }
+// }
 
 #[derive(Clone)]
 pub struct GltfRenderInfo {
@@ -103,7 +103,7 @@ impl GltfRenderInfo {
                     len: instance_buffer.len() as u32,
                     primitives: mesh.primitives.clone(),
                     instance_buffer,
-                    instances,
+                    // instances,
                 }
             })
             .collect();

@@ -2,7 +2,6 @@ use camera::OrbitCamera;
 use egui_file::FileDialog;
 use egui_winit_vulkano::CallbackFn;
 use nalgebra_glm as glm;
-use raytracer::Raytracer;
 use set_layouts::SetLayouts;
 use skybox::Skybox;
 use std::{env::current_dir, path::PathBuf, sync::Arc};
@@ -31,7 +30,7 @@ mod camera;
 mod cubemap;
 mod gltf;
 
-mod raytracer;
+// mod raytracer;
 mod set_layouts;
 mod skybox;
 mod viewer;
@@ -147,8 +146,7 @@ pub struct State {
 
     skybox: Skybox,
     viewer: Viewer,
-    pub raytracer: Raytracer,
-
+    // pub raytracer: Raytracer,
     file_picker: FilePicker,
 }
 impl State {
@@ -202,7 +200,7 @@ impl State {
             .wait(None)
             .unwrap();
 
-        let raytracer = Raytracer::new(queue.device(), allocators.clone());
+        // let raytracer = Raytracer::new(queue.device(), allocators.clone());
 
         Self {
             camera,
@@ -213,7 +211,7 @@ impl State {
             queue,
             cameras,
             viewer,
-            raytracer,
+            // raytracer,
         }
     }
     pub fn update<L>(&mut self, builder: &mut AutoCommandBufferBuilder<L>, index: usize) {
@@ -221,10 +219,10 @@ impl State {
             self.viewer.renderer.new_env(conv, filt);
         }
         if self.viewer.update() {
-            self.raytracer.build(
-                self.queue.clone(),
-                self.viewer.renderer.info.as_ref().unwrap(),
-            );
+            // self.raytracer.build(
+            //     self.queue.clone(),
+            //     self.viewer.renderer.info.as_ref().unwrap(),
+            // );
         }
 
         if self.aspect.is_normal() {

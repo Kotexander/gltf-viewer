@@ -1,6 +1,6 @@
 use crate::Allocators;
 use image::{convert_image, load_image};
-use material::{Factors, Material};
+use material::{Material, MaterialUniform};
 use mesh::Mesh;
 use std::{path::Path, sync::Arc};
 use texture::Texture;
@@ -100,20 +100,20 @@ impl<'a> Loader<'a> {
         material: gltf::Material,
         images: &mut [Option<::image::RgbaImage>],
     ) -> Material {
-        // TODO: handle default materials
         let Some(i) = material.index() else {
+            let uniform = MaterialUniform::default();
             return Material {
                 set: Material::create_set(
                     self.allocators.set.clone(),
                     self.material_set_layout.clone(),
-                    Material::create_factor_buffer(self.allocators.mem.clone(), Factors::default()),
+                    Material::create_factor_buffer(self.allocators.mem.clone(), uniform),
                     self.get_default_texture(),
                     self.get_default_texture(),
                     self.get_default_texture(),
                     self.get_default_texture(),
                     self.get_default_texture(),
                 ),
-                tex_sets: Default::default(),
+                uniform,
             };
         };
         let mat = &self.material[i];
@@ -187,7 +187,7 @@ impl<'a> Loader<'a> {
                 ImageCreateInfo {
                     usage: ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
                     extent: [1; 3],
-                    format: Format::R8G8B8A8_SRGB,
+                    format: Format::R8G8B8A8_UNORM,
                     ..Default::default()
                 },
                 AllocationCreateInfo::default(),
