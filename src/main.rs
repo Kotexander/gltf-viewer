@@ -194,7 +194,7 @@ impl ApplicationHandler for App {
             },
         );
 
-        let num_frames = renderer.swapchain_image_views().len();
+        let num_frames = renderer.swapchain_image_views().len() + 1;
 
         let state = State::new(
             &self.allocators,

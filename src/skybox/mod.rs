@@ -83,7 +83,6 @@ impl Skybox {
                 .unwrap();
 
             image
-            // todo!()
         });
         self.job = Some(job)
     }

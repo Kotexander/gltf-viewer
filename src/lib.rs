@@ -287,6 +287,72 @@ impl State {
             });
 
             ui.separator();
+
+            ui.collapsing("Scene", |ui| {
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    for primitive in self.viewer.renderer.info.iter_mut().flat_map(|info| {
+                        info.meshes
+                            .iter_mut()
+                            .flat_map(|mesh| mesh.primatives_mut().iter_mut())
+                    }) {
+                        ui.horizontal(|ui| {
+                            let mut rgba = egui::Rgba::from_rgba_unmultiplied(
+                                primitive.material_push.bc.x,
+                                primitive.material_push.bc.y,
+                                primitive.material_push.bc.z,
+                                primitive.material_push.bc.w,
+                            );
+                            egui::color_picker::color_edit_button_rgba(
+                                ui,
+                                &mut rgba,
+                                egui::color_picker::Alpha::OnlyBlend,
+                            );
+                            primitive.material_push.bc = rgba.to_rgba_unmultiplied().into();
+                            ui.label("Base colour factor");
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut primitive.material_push.rm.x)
+                                    .range(0.0..=1.0)
+                                    .speed(0.01),
+                            );
+                            ui.label("Roughness factor");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut primitive.material_push.rm.y)
+                                    .range(0.0..=1.0)
+                                    .speed(0.01),
+                            );
+                            ui.label("Metallness factor");
+                        });
+
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut primitive.material_push.ao)
+                                    .range(0.0..=1.0)
+                                    .speed(0.01),
+                            );
+                            ui.label("Occlusion factor");
+                        });
+                        ui.horizontal(|ui| {
+                            ui.label("Emission factor: ");
+                            let mut rgb = primitive.material_push.em.data.0[0];
+                            egui::color_picker::color_edit_button_rgb(ui, &mut rgb);
+                            primitive.material_push.em = rgb.into();
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add(
+                                egui::DragValue::new(&mut primitive.material_push.nm).speed(0.01),
+                            );
+                            ui.label("Normal scale");
+                        });
+                    }
+                });
+            });
+
+            ui.separator();
         });
 
         egui::CentralPanel::default()
@@ -341,6 +407,15 @@ impl State {
                             )
                             .unwrap();
                         viewer.render(context.builder);
+                        context
+                            .builder
+                            .bind_descriptor_sets(
+                                PipelineBindPoint::Graphics,
+                                skybox.pipeline.layout().clone(),
+                                0,
+                                camera_set.clone(),
+                            )
+                            .unwrap();
                         skybox.render(context.builder);
                         // raytracer.render(camera, aspect, context.resources.queue.clone());
                     })),

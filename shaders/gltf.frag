@@ -19,7 +19,7 @@ layout(set = 1, binding = 0) uniform samplerCube envMap;
 layout(set = 1, binding = 1) uniform samplerCube spcMap;
 layout(set = 1, binding = 2) uniform sampler2D lutMap;
 
-layout(set = 2, binding = 0) uniform Material {
+layout(push_constant) uniform Material {
     vec4 bc;
     vec3 em;
     float ao;
@@ -32,11 +32,11 @@ layout(set = 2, binding = 0) uniform Material {
     int em_set;
     int nm_set;
 } m;
-layout(set = 2, binding = 1) uniform sampler2D bc_sampler;
-layout(set = 2, binding = 2) uniform sampler2D rm_sampler;
-layout(set = 2, binding = 3) uniform sampler2D ao_sampler;
-layout(set = 2, binding = 4) uniform sampler2D em_sampler;
-layout(set = 2, binding = 5) uniform sampler2D nm_sampler;
+layout(set = 2, binding = 0) uniform sampler2D bc_sampler;
+layout(set = 2, binding = 1) uniform sampler2D rm_sampler;
+layout(set = 2, binding = 2) uniform sampler2D ao_sampler;
+layout(set = 2, binding = 3) uniform sampler2D em_sampler;
+layout(set = 2, binding = 4) uniform sampler2D nm_sampler;
 
 vec2 get_uv(uint set) {
     if (set == 0) {
@@ -46,20 +46,45 @@ vec2 get_uv(uint set) {
         return uv_1;
     }
 }
-vec3 get_base_color() {
-    return texture(bc_sampler, get_uv(m.bc_set)).rgb * m.bc.rgb;
+vec4 get_base_color() {
+    vec4 bc = vec4(1.0);
+    if (m.bc_set >= 0) {
+        bc = texture(bc_sampler, get_uv(m.bc_set));
+    }
+    return bc * m.bc;
 }
 vec2 get_roughness_metallic() {
-    return texture(rm_sampler, get_uv(m.rm_set)).gb * m.rm;
+    vec2 rm = vec2(1.0);
+    if (m.rm_set >= 0) {
+        rm = texture(rm_sampler, get_uv(m.rm_set)).gb;
+    }
+    return rm * m.rm;
 }
 float get_ambient_occlusion() {
-    return 1.0 + m.ao * (texture(ao_sampler, get_uv(m.ao_set)).r - 1.0);
+    float ao = 1.0;
+    if (m.ao_set >= 0) {
+        ao = texture(ao_sampler, get_uv(m.ao_set)).r;
+    }
+    return 1.0 + m.ao * (ao - 1.0);
 }
 vec3 get_emmissive() {
-    return texture(em_sampler, get_uv(m.em_set)).rgb * m.em;
+    vec3 em = vec3(1.0);
+    if (m.em_set >= 0) {
+        em = texture(em_sampler, get_uv(m.em_set)).rgb;
+    }
+    return em * m.em;
 }
-vec3 get_normal_map() {
-    return normalize((texture(nm_sampler, get_uv(m.nm_set)).rgb * 2.0 - 1.0) * vec3(m.nm, m.nm, 1.0));
+vec3 get_normal() {
+    vec3 n = normalize(normal);
+    if (m.nm_set >= 0) {
+        vec3 t = normalize(tangent);
+        vec3 b = normalize(bitangent);
+        mat3 tbn = mat3(t, b, n);
+        vec3 nm = (texture(nm_sampler, get_uv(m.nm_set)).rgb * 2.0 - 1.0);
+        nm.xy *= m.nm;
+        return tbn * normalize(nm);
+    }
+    return n;
 }
 
 const float PI = 3.14159265358979323846264338327950288;
@@ -115,23 +140,12 @@ vec3 pbr_neutral_tone_mapping(vec3 color) {
 }
 
 void main() {
-    vec3 N;
-    vec3 n = normalize(normal);
-    if (m.nm_set >= 0) {
-        vec3 t = normalize(tangent);
-        vec3 b = normalize(bitangent);
-        mat3 tbn = mat3(t, b, n);
-        N = tbn * get_normal_map();
-    }
-    else {
-        N = n;
-    }
-
-    vec3 bc = get_base_color();
+    vec3 bc = get_base_color().rgb;
     float ao = get_ambient_occlusion();
     vec2 rm = get_roughness_metallic();
     vec3 em = get_emmissive();
 
+    vec3 N = get_normal();
     vec3 V = normalize(cam.view_inv[3].xyz - position);
     vec3 R = reflect(-V, N);
     vec3 f0 = mix(vec3(0.04), bc, rm.y);
@@ -150,6 +164,4 @@ void main() {
     vec3 ambient = (diffuse + specular) * ao;
     vec3 color = ambient + em;
     f_color = vec4(pbr_neutral_tone_mapping(color), 1.0);
-    // f_color = vec4((N + 1.0) / 2.0, 1.0);
-    // f_color = vec4((n + 1.0) / 2.0, 1.0);
 }

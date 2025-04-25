@@ -1,4 +1,8 @@
-use loader::mesh::{Mesh, Primitive, PrimitiveVertex};
+use loader::{
+    material::MaterialUniform,
+    mesh::Mesh,
+    primitive::{Primitive, PrimitiveVertex},
+};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
@@ -20,9 +24,10 @@ use vulkano::{
             vertex_input::{Vertex, VertexDefinition},
             viewport::ViewportState,
         },
-        layout::PipelineLayoutCreateInfo,
+        layout::{PipelineLayoutCreateInfo, PushConstantRange},
     },
     render_pass::Subpass,
+    shader::ShaderStages,
 };
 
 pub mod loader;
@@ -57,14 +62,11 @@ pub struct InstancedMesh {
     // instances: Vec<glm::Mat4>,
     len: u32,
 }
-// impl InstancedMesh {
-//     pub fn primatives(&self) -> &[Primitive] {
-//         &self.primitives
-//     }
-//     pub fn instances(&self) -> &[glm::Mat4] {
-//         &self.instances
-//     }
-// }
+impl InstancedMesh {
+    pub fn primatives_mut(&mut self) -> &mut [Primitive] {
+        &mut self.primitives
+    }
+}
 
 #[derive(Clone)]
 pub struct GltfRenderInfo {
@@ -173,6 +175,11 @@ impl GltfPipeline {
             device.clone(),
             PipelineLayoutCreateInfo {
                 set_layouts,
+                push_constant_ranges: vec![PushConstantRange {
+                    stages: ShaderStages::FRAGMENT,
+                    offset: 0,
+                    size: std::mem::size_of::<MaterialUniform>() as u32,
+                }],
                 ..Default::default()
             },
         )

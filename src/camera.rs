@@ -56,7 +56,7 @@ impl Default for OrbitCamera {
             yaw: 0.0,
             zoom: 3.0,
             fov: FRAC_PI_3,
-            near: 0.1,
+            near: 0.01,
             far: 100.0,
         }
     }
@@ -91,6 +91,8 @@ impl OrbitCamera {
                 .range(self.near..=f32::MAX)
                 .speed(0.1),
         );
+        ui.label("FOV");
+        ui.drag_angle(&mut self.fov);
 
         ui.separator();
 

@@ -19,8 +19,9 @@ use vulkano::{
 };
 
 mod image;
-mod material;
+pub mod material;
 pub mod mesh;
+pub mod primitive;
 mod texture;
 
 pub struct Loader<'a> {
@@ -101,19 +102,17 @@ impl<'a> Loader<'a> {
         images: &mut [Option<::image::RgbaImage>],
     ) -> Material {
         let Some(i) = material.index() else {
-            let uniform = MaterialUniform::default();
             return Material {
                 set: Material::create_set(
                     self.allocators.set.clone(),
                     self.material_set_layout.clone(),
-                    Material::create_factor_buffer(self.allocators.mem.clone(), uniform),
                     self.get_default_texture(),
                     self.get_default_texture(),
                     self.get_default_texture(),
                     self.get_default_texture(),
                     self.get_default_texture(),
                 ),
-                uniform,
+                uniform: MaterialUniform::default(),
             };
         };
         let mat = &self.material[i];

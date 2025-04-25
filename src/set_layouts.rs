@@ -45,20 +45,11 @@ impl SetLayouts {
             device.clone(),
             DescriptorSetLayoutCreateInfo {
                 bindings: BTreeMap::from([
-                    (
-                        0,
-                        DescriptorSetLayoutBinding {
-                            stages: ShaderStages::FRAGMENT,
-                            ..DescriptorSetLayoutBinding::descriptor_type(
-                                DescriptorType::UniformBuffer,
-                            )
-                        },
-                    ),
+                    texture_layout(0),
                     texture_layout(1),
                     texture_layout(2),
                     texture_layout(3),
                     texture_layout(4),
-                    texture_layout(5),
                 ]),
                 ..Default::default()
             },

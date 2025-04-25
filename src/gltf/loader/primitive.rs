@@ -1,0 +1,258 @@
+use super::{
+    Loader,
+    material::{MaterialUniform, TextureSet},
+};
+use nalgebra_glm as glm;
+use std::sync::Arc;
+use vulkano::{
+    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
+    command_buffer::{AutoCommandBufferBuilder, CopyBufferInfo},
+    descriptor_set::DescriptorSet,
+    memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter},
+    pipeline::{PipelineBindPoint, PipelineLayout, graphics::vertex_input::Vertex},
+};
+
+#[repr(C)]
+#[derive(Debug, Default, BufferContents, Vertex)]
+pub struct PrimitiveVertex {
+    #[format(R32G32B32_SFLOAT)]
+    pub position: glm::Vec3,
+    #[format(R32G32B32_SFLOAT)]
+    pub normal: glm::Vec3,
+    #[format(R32G32B32A32_SFLOAT)]
+    pub tangent: glm::Vec4,
+    #[format(R32G32_SFLOAT)]
+    pub uv_0: glm::Vec2,
+    #[format(R32G32_SFLOAT)]
+    pub uv_1: glm::Vec2,
+}
+
+struct VertexData<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> {
+    vertices: Vec<PrimitiveVertex>,
+    indices: Vec<u32>,
+    nm_set: TextureSet,
+    reader: gltf::mesh::Reader<'a, 's, F>,
+}
+impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> VertexData<'a, 's, F> {
+    fn new(reader: gltf::mesh::Reader<'a, 's, F>, nm_set: TextureSet) -> Option<Self> {
+        // get positions or return None if they don't exist and ignore the primitve
+        let vertices: Vec<_> = reader
+            .read_positions()?
+            .map(|pos| PrimitiveVertex {
+                position: pos.into(),
+                ..Default::default()
+            })
+            .collect();
+        // get indices or assign each vertex an index
+        let indices: Vec<_> = reader
+            .read_indices()
+            .map(|i| i.into_u32().collect())
+            .unwrap_or_else(|| (0..vertices.len() as u32).collect());
+
+        Some(Self {
+            vertices,
+            indices,
+            reader,
+            nm_set,
+        })
+    }
+    fn set_normals(&mut self) {
+        match self.reader.read_normals() {
+            // use provided normals
+            Some(normals) => {
+                for (i, normal) in normals.enumerate() {
+                    self.vertices[i].normal = normal.into();
+                }
+            }
+            // calculate flat normals
+            None => {
+                unimplemented!("calculate flat normals and ignore provided tangents")
+            }
+        }
+    }
+    fn set_textures_sets(&mut self) {
+        for (i, tex) in self
+            .reader
+            .read_tex_coords(0)
+            .into_iter()
+            .flat_map(|iter| iter.into_f32())
+            .enumerate()
+        {
+            self.vertices[i].uv_0 = tex.into();
+        }
+        for (i, tex) in self
+            .reader
+            .read_tex_coords(1)
+            .into_iter()
+            .flat_map(|iter| iter.into_f32())
+            .enumerate()
+        {
+            self.vertices[i].uv_1 = tex.into();
+        }
+    }
+    fn set_tangents(&mut self) {
+        match self.reader.read_tangents() {
+            // use provided tangents
+            Some(tangents) => {
+                for (i, tangent) in tangents.enumerate() {
+                    self.vertices[i].tangent = tangent.into();
+                }
+            }
+            None => {
+                if self.nm_set.is_some() {
+                    assert!(
+                        mikktspace::generate_tangents(self),
+                        "generating tangents failed"
+                    );
+                }
+            }
+        }
+    }
+}
+impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> mikktspace::Geometry
+    for VertexData<'a, 's, F>
+{
+    fn num_faces(&self) -> usize {
+        self.indices.len() / 3
+    }
+
+    fn num_vertices_of_face(&self, _face: usize) -> usize {
+        3
+    }
+
+    fn position(&self, face: usize, vert: usize) -> [f32; 3] {
+        self.vertices[self.indices[face * 3 + vert] as usize]
+            .position
+            .into()
+    }
+
+    fn normal(&self, face: usize, vert: usize) -> [f32; 3] {
+        self.vertices[self.indices[face * 3 + vert] as usize]
+            .normal
+            .into()
+    }
+
+    fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
+        match self.nm_set.get() {
+            0 => self.vertices[self.indices[face * 3 + vert] as usize]
+                .uv_0
+                .into(),
+            1 => self.vertices[self.indices[face * 3 + vert] as usize]
+                .uv_1
+                .into(),
+            set => {
+                panic!("invalid texture set: {set}");
+            }
+        }
+    }
+
+    fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
+        self.vertices[self.indices[face * 3 + vert] as usize].tangent = tangent.into();
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct Primitive {
+    material_set: Arc<DescriptorSet>,
+    pub material_push: MaterialUniform,
+    vbuf: Subbuffer<[PrimitiveVertex]>,
+    ibuf: Subbuffer<[u32]>,
+    ilen: u32,
+}
+impl Primitive {
+    pub fn from_loader(
+        primitive: gltf::Primitive,
+        buffers: &[gltf::buffer::Data],
+        images: &mut [Option<::image::RgbaImage>],
+        loader: &mut Loader,
+    ) -> Option<Self> {
+        let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice()));
+        let material = loader.get_material(primitive.material(), images);
+
+        let mut vertex_data = VertexData::new(reader, material.uniform.nm_set)?;
+        vertex_data.set_normals();
+        vertex_data.set_textures_sets();
+        vertex_data.set_tangents();
+
+        let vbuf = stage(
+            loader.builder,
+            loader.allocators.mem.clone(),
+            BufferUsage::VERTEX_BUFFER,
+            vertex_data.vertices,
+        );
+        let ibuf = stage(
+            loader.builder,
+            loader.allocators.mem.clone(),
+            BufferUsage::INDEX_BUFFER,
+            vertex_data.indices,
+        );
+
+        Some(Self {
+            ilen: ibuf.len() as u32,
+            vbuf,
+            ibuf,
+            material_set: material.set.clone(),
+            material_push: material.uniform,
+        })
+    }
+    pub fn render<L>(
+        self,
+        pipeline_layout: Arc<PipelineLayout>,
+        instances: u32,
+        builder: &mut AutoCommandBufferBuilder<L>,
+    ) {
+        builder
+            .bind_descriptor_sets(
+                PipelineBindPoint::Graphics,
+                pipeline_layout.clone(),
+                2,
+                self.material_set,
+            )
+            .unwrap()
+            .push_constants(pipeline_layout, 0, self.material_push)
+            .unwrap()
+            .bind_vertex_buffers(0, self.vbuf)
+            .unwrap()
+            .bind_index_buffer(self.ibuf)
+            .unwrap();
+        unsafe { builder.draw_indexed(self.ilen, instances, 0, 0, 0) }.unwrap();
+    }
+}
+
+fn stage<L, T: BufferContents>(
+    builder: &mut AutoCommandBufferBuilder<L>,
+    allocator: Arc<dyn MemoryAllocator>,
+    usage: BufferUsage,
+    data: Vec<T>,
+) -> Subbuffer<[T]> {
+    let stage = Buffer::from_iter(
+        allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_SRC,
+            ..Default::default()
+        },
+        AllocationCreateInfo {
+            memory_type_filter: MemoryTypeFilter::PREFER_HOST
+                | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+            ..Default::default()
+        },
+        data,
+    )
+    .unwrap();
+    let buf = Buffer::new_slice(
+        allocator.clone(),
+        BufferCreateInfo {
+            usage: BufferUsage::TRANSFER_DST | usage,
+            ..Default::default()
+        },
+        AllocationCreateInfo::default(),
+        stage.len(),
+    )
+    .unwrap();
+
+    builder
+        .copy_buffer(CopyBufferInfo::buffers(stage, buf.clone()))
+        .unwrap();
+
+    buf
+}
