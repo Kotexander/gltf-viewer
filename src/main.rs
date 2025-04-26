@@ -23,7 +23,7 @@ use vulkano::{
 };
 use vulkano_util::{
     context::{VulkanoConfig, VulkanoContext},
-    window::VulkanoWindows,
+    window::{VulkanoWindows, WindowDescriptor},
 };
 use winit::{
     application::ApplicationHandler,
@@ -108,6 +108,7 @@ impl App {
             ray_tracing_pipeline: true,
             buffer_device_address: true,
             acceleration_structure: true,
+            sampler_anisotropy: true,
             ..Default::default()
         };
         let context = VulkanoContext::new(VulkanoConfig {
@@ -166,13 +167,14 @@ impl ApplicationHandler for App {
         self.windows.create_window(
             event_loop,
             &self.context,
-            &Default::default(),
+            &WindowDescriptor {
+                title: "glTF Viewer".into(),
+                ..Default::default()
+            },
             |swapchain_info| {
                 swapchain_info.image_format = Format::B8G8R8A8_SRGB;
                 // swapchain_info.image_format = Format::B8G8R8A8_UNORM;
                 swapchain_info.image_usage |= ImageUsage::TRANSFER_DST;
-                swapchain_info.min_image_count += 1;
-                // swapchain_info.present_mode = vulkano::swapchain::PresentMode::Mailbox;
             },
         );
         let renderer = self.windows.get_primary_renderer_mut().unwrap();

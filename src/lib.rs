@@ -68,7 +68,7 @@ pub enum FilePicker {
 }
 impl FilePicker {
     pub fn skybox(&mut self) {
-        let extensions = ["hdr", "exr", "jpg"];
+        let extensions = ["hdr", "exr", "png", "jpg"];
         let mut file_picker = FileDialog::open_file(self.initial_path())
             .show_rename(false)
             .show_new_folder(false)
@@ -337,10 +337,10 @@ impl State {
                             ui.label("Occlusion factor");
                         });
                         ui.horizontal(|ui| {
-                            ui.label("Emission factor: ");
                             let mut rgb = primitive.material_push.em.data.0[0];
                             egui::color_picker::color_edit_button_rgb(ui, &mut rgb);
                             primitive.material_push.em = rgb.into();
+                            ui.label("Emission factor");
                         });
                         ui.horizontal(|ui| {
                             ui.add(

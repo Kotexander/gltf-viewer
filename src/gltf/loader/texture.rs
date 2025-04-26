@@ -35,13 +35,15 @@ impl Texture {
             .min_filter()
             .map(convert_min_filter)
             .unwrap_or((Filter::Linear, SamplerMipmapMode::Linear));
+        let device = loader.allocators.mem.device();
         let sampler = Sampler::new(
-            loader.allocators.mem.device().clone(),
+            device.clone(),
             SamplerCreateInfo {
                 mag_filter,
                 min_filter,
                 mipmap_mode,
                 address_mode,
+                anisotropy: Some(device.physical_device().properties().max_sampler_anisotropy),
                 ..SamplerCreateInfo::simple_repeat_linear()
             },
         )

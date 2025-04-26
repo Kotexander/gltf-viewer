@@ -18,11 +18,11 @@ use vulkano::{
     memory::allocator::{AllocationCreateInfo, MemoryTypeFilter},
 };
 
-mod image;
+pub mod image;
 pub mod material;
 pub mod mesh;
 pub mod primitive;
-mod texture;
+pub mod texture;
 
 pub struct Loader<'a> {
     allocators: Allocators,
