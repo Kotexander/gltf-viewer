@@ -8,26 +8,6 @@ use vulkano::{
     },
 };
 
-#[repr(transparent)]
-#[derive(Debug, Clone, Copy, BufferContents)]
-pub struct TextureSet(pub i32);
-impl TextureSet {
-    pub fn none() -> Self {
-        Self(-1)
-    }
-    pub fn is_some(self) -> bool {
-        self.0 >= 0
-    }
-    pub fn get(self) -> i32 {
-        self.0
-    }
-}
-impl From<u32> for TextureSet {
-    fn from(value: u32) -> Self {
-        Self(value as i32)
-    }
-}
-
 #[repr(C)]
 #[derive(Debug, Clone, Copy, BufferContents)]
 pub struct MaterialUniform {
@@ -37,11 +17,11 @@ pub struct MaterialUniform {
     pub rm: glm::Vec2,
     pub nm: f32,
 
-    pub bc_set: TextureSet,
-    pub rm_set: TextureSet,
-    pub ao_set: TextureSet,
-    pub em_set: TextureSet,
-    pub nm_set: TextureSet,
+    pub bc_set: i32,
+    pub rm_set: i32,
+    pub ao_set: i32,
+    pub em_set: i32,
+    pub nm_set: i32,
 }
 impl Default for MaterialUniform {
     fn default() -> Self {
@@ -51,11 +31,11 @@ impl Default for MaterialUniform {
             ao: 1.0,
             em: glm::vec3(0.0, 0.0, 0.0),
             nm: 1.0,
-            bc_set: TextureSet::none(),
-            rm_set: TextureSet::none(),
-            ao_set: TextureSet::none(),
-            em_set: TextureSet::none(),
-            nm_set: TextureSet::none(),
+            bc_set: -1,
+            rm_set: -1,
+            ao_set: -1,
+            em_set: -1,
+            nm_set: -1,
         }
     }
 }
@@ -66,11 +46,7 @@ pub struct Material {
     pub uniform: MaterialUniform,
 }
 impl Material {
-    pub fn from_loader(
-        material: gltf::Material,
-        images: &mut [Option<::image::RgbaImage>],
-        loader: &mut Loader,
-    ) -> Self {
+    pub fn from_loader(material: gltf::Material, loader: &mut Loader) -> Self {
         let pbr = material.pbr_metallic_roughness();
 
         let mut uniform = MaterialUniform {
@@ -81,38 +57,38 @@ impl Material {
         };
 
         let base_colour = if let Some(base_color) = pbr.base_color_texture() {
-            uniform.bc_set = base_color.tex_coord().into();
-            loader.get_texture(base_color.texture(), true, images)
+            uniform.bc_set = base_color.tex_coord() as i32;
+            loader.get_texture(base_color.texture())
         } else {
             loader.get_default_texture()
         };
 
         let roughness_matallic = if let Some(rougness_metallic) = pbr.metallic_roughness_texture() {
-            uniform.rm_set = rougness_metallic.tex_coord().into();
-            loader.get_texture(rougness_metallic.texture(), false, images)
+            uniform.rm_set = rougness_metallic.tex_coord() as i32;
+            loader.get_texture(rougness_metallic.texture())
         } else {
             loader.get_default_texture()
         };
 
         let occlusion = if let Some(occlusion) = material.occlusion_texture() {
-            uniform.ao_set = occlusion.tex_coord().into();
+            uniform.ao_set = occlusion.tex_coord() as i32;
             uniform.ao = occlusion.strength();
-            loader.get_texture(occlusion.texture(), false, images)
+            loader.get_texture(occlusion.texture())
         } else {
             loader.get_default_texture()
         };
 
         let emissive = if let Some(emissive) = material.emissive_texture() {
-            uniform.em_set = emissive.tex_coord().into();
-            loader.get_texture(emissive.texture(), true, images)
+            uniform.em_set = emissive.tex_coord() as i32;
+            loader.get_texture(emissive.texture())
         } else {
             loader.get_default_texture()
         };
 
         let normal = if let Some(normal) = material.normal_texture() {
-            uniform.nm_set = normal.tex_coord().into();
+            uniform.nm_set = normal.tex_coord() as i32;
             uniform.nm = normal.scale();
-            loader.get_texture(normal.texture(), false, images)
+            loader.get_texture(normal.texture())
         } else {
             loader.get_default_texture()
         };

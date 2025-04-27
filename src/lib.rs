@@ -28,7 +28,7 @@ use vulkano::{
 
 mod camera;
 mod cubemap;
-mod gltf;
+mod vktf;
 
 // mod raytracer;
 mod set_layouts;

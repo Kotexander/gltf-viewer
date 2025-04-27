@@ -1,4 +1,4 @@
-use crate::{Allocators, gltf::GltfRenderInfo, set_layouts::SetLayouts};
+use crate::{Allocators, set_layouts::SetLayouts, vktf::GltfRenderInfo};
 use loader::ViewerLoader;
 use renderer::ViewerRenderer;
 use std::{path::PathBuf, sync::Arc, thread::JoinHandle};

@@ -1,7 +1,7 @@
 use crate::{
     Allocators,
-    gltf::{GltfPipeline, GltfRenderInfo},
     set_layouts::SetLayouts,
+    vktf::{GltfPipeline, GltfRenderInfo},
 };
 use image::EncodableLayout;
 use std::sync::Arc;

@@ -1,6 +1,6 @@
 use crate::{
     Allocators,
-    gltf::{GltfRenderInfo, loader::GltfLoader},
+    vktf::{GltfRenderInfo, loader::GltfLoader},
 };
 use std::{path::Path, sync::Arc};
 use vulkano::{
@@ -28,7 +28,7 @@ impl ViewerLoader {
         let scene = gltf_loader.document.default_scene().unwrap();
 
         let info =
-            GltfRenderInfo::from_scene(self.allocators.mem.clone(), scene, gltf_loader.meshes);
+            GltfRenderInfo::from_scene(self.allocators.mem.clone(), scene, &gltf_loader.meshes);
         Ok(info)
     }
 }

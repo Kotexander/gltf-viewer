@@ -17,9 +17,27 @@ use vulkano::{
 pub fn load_image(
     allocator: Arc<StandardMemoryAllocator>,
     builder: &mut AutoCommandBufferBuilder<PrimaryAutoCommandBuffer>,
-    image: ::image::RgbaImage,
+    image: ::image::DynamicImage,
     is_srgb: bool,
 ) -> Arc<ImageView> {
+    let image = image
+        .resize_exact(
+            image.width().next_power_of_two(),
+            image.height().next_power_of_two(),
+            image::imageops::FilterType::Lanczos3,
+        )
+        .to_rgba8();
+
+    let format = if is_srgb {
+        Format::R8G8B8A8_SRGB
+    } else {
+        Format::R8G8B8A8_UNORM
+    };
+
+    let w = image.width();
+    let h = image.height();
+    let mips = w.max(h).ilog2() + 1;
+
     let stage_buffer = Buffer::from_iter(
         allocator.clone(),
         BufferCreateInfo {
@@ -34,16 +52,6 @@ pub fn load_image(
         image.as_bytes().iter().copied(),
     )
     .unwrap();
-
-    let format = if is_srgb {
-        Format::R8G8B8A8_SRGB
-    } else {
-        Format::R8G8B8A8_UNORM
-    };
-
-    let w = image.width();
-    let h = image.height();
-    let mips = w.max(h).ilog2() + 1;
 
     let stage_image = Image::new(
         allocator.clone(),
@@ -118,8 +126,8 @@ pub fn load_image(
     ImageView::new_default(image).unwrap()
 }
 
-pub fn convert_image(data: gltf::image::Data) -> image::ImageBuffer<image::Rgba<u8>, Vec<u8>> {
-    let image = match data.format {
+pub fn convert_image(data: gltf::image::Data) -> image::DynamicImage {
+    match data.format {
         gltf::image::Format::R8 => image::DynamicImage::ImageLuma8(
             image::ImageBuffer::from_vec(data.width, data.height, data.pixels).unwrap(),
         ),
@@ -156,12 +164,5 @@ pub fn convert_image(data: gltf::image::Data) -> image::ImageBuffer<image::Rgba<
             image::ImageBuffer::from_vec(data.width, data.height, bytemuck::cast_vec(data.pixels))
                 .unwrap(),
         ),
-    };
-    image
-        .resize_exact(
-            image.width().next_power_of_two(),
-            image.height().next_power_of_two(),
-            image::imageops::FilterType::Lanczos3,
-        )
-        .to_rgba8() // TODO: maybe don't default to rgba8
+    }
 }

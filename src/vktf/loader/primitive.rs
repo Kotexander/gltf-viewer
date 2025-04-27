@@ -1,7 +1,4 @@
-use super::{
-    Loader,
-    material::{MaterialUniform, TextureSet},
-};
+use super::{Loader, material::MaterialUniform};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
@@ -30,11 +27,11 @@ pub struct PrimitiveVertex {
 struct VertexData<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> {
     vertices: Vec<PrimitiveVertex>,
     indices: Vec<u32>,
-    nm_set: TextureSet,
+    nm_set: i32,
     reader: gltf::mesh::Reader<'a, 's, F>,
 }
 impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> VertexData<'a, 's, F> {
-    fn new(reader: gltf::mesh::Reader<'a, 's, F>, nm_set: TextureSet) -> Option<Self> {
+    fn new(reader: gltf::mesh::Reader<'a, 's, F>, nm_set: i32) -> Option<Self> {
         // get positions or return None if they don't exist and ignore the primitve
         let vertices: Vec<_> = reader
             .read_positions()?
@@ -99,7 +96,7 @@ impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> VertexData<'a,
                 }
             }
             None => {
-                if self.nm_set.is_some() {
+                if self.nm_set >= 0 {
                     assert!(
                         mikktspace::generate_tangents(self),
                         "generating tangents failed"
@@ -133,7 +130,7 @@ impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> mikktspace::Ge
     }
 
     fn tex_coord(&self, face: usize, vert: usize) -> [f32; 2] {
-        match self.nm_set.get() {
+        match self.nm_set {
             0 => self.vertices[self.indices[face * 3 + vert] as usize]
                 .uv_0
                 .into(),
@@ -163,11 +160,10 @@ impl Primitive {
     pub fn from_loader(
         primitive: gltf::Primitive,
         buffers: &[gltf::buffer::Data],
-        images: &mut [Option<::image::RgbaImage>],
         loader: &mut Loader,
     ) -> Option<Self> {
         let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice()));
-        let material = loader.get_material(primitive.material(), images);
+        let material = loader.get_material(primitive.material());
 
         let mut vertex_data = VertexData::new(reader, material.uniform.nm_set)?;
         vertex_data.set_normals();

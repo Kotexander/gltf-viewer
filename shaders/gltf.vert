@@ -32,7 +32,7 @@ void main() {
     f_position = pos.xyz;
     f_normal = model_inv_t * normal;
     f_tangent = model_inv_t * tangent.xyz;
-    f_bitangent = cross(f_normal, f_tangent) * -tangent.w;
+    f_bitangent = cross(f_normal, f_tangent) * tangent.w;
     f_uv_0 = uv_0;
     f_uv_1 = uv_1;
 
