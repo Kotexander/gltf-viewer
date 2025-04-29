@@ -24,15 +24,16 @@ pub struct PrimitiveVertex {
     pub uv_1: glm::Vec2,
 }
 
-struct VertexData<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> {
+struct PrimitiveVertexDataBuilder<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> {
     vertices: Vec<PrimitiveVertex>,
     indices: Vec<u32>,
     nm_set: i32,
     reader: gltf::mesh::Reader<'a, 's, F>,
 }
-impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> VertexData<'a, 's, F> {
+impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>>
+    PrimitiveVertexDataBuilder<'a, 's, F>
+{
     fn new(reader: gltf::mesh::Reader<'a, 's, F>, nm_set: i32) -> Option<Self> {
-        // get positions or return None if they don't exist and ignore the primitve
         let vertices: Vec<_> = reader
             .read_positions()?
             .map(|pos| PrimitiveVertex {
@@ -40,7 +41,7 @@ impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> VertexData<'a,
                 ..Default::default()
             })
             .collect();
-        // get indices or assign each vertex an index
+
         let indices: Vec<_> = reader
             .read_indices()
             .map(|i| i.into_u32().collect())
@@ -55,13 +56,11 @@ impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> VertexData<'a,
     }
     fn set_normals(&mut self) {
         match self.reader.read_normals() {
-            // use provided normals
             Some(normals) => {
                 for (i, normal) in normals.enumerate() {
                     self.vertices[i].normal = normal.into();
                 }
             }
-            // calculate flat normals
             None => {
                 unimplemented!("calculate flat normals and ignore provided tangents")
             }
@@ -107,7 +106,7 @@ impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> VertexData<'a,
     }
 }
 impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> mikktspace::Geometry
-    for VertexData<'a, 's, F>
+    for PrimitiveVertexDataBuilder<'a, 's, F>
 {
     fn num_faces(&self) -> usize {
         self.indices.len() / 3
@@ -143,7 +142,29 @@ impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> mikktspace::Ge
         }
     }
 
-    fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
+    // fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
+    //     self.vertices[self.indices[face * 3 + vert] as usize].tangent = tangent.into();
+    //     self.vertices[self.indices[face * 3 + vert] as usize]
+    //         .tangent
+    //         .w *= -1.0;
+    // }
+
+    fn set_tangent(
+        &mut self,
+        tangent: [f32; 3],
+        _bi_tangent: [f32; 3],
+        _f_mag_s: f32,
+        _f_mag_t: f32,
+        bi_tangent_preserves_orientation: bool,
+        face: usize,
+        vert: usize,
+    ) {
+        let sign = if bi_tangent_preserves_orientation {
+            -1.0
+        } else {
+            1.0
+        };
+        let tangent = [tangent[0], tangent[1], tangent[2], sign];
         self.vertices[self.indices[face * 3 + vert] as usize].tangent = tangent.into();
     }
 }
@@ -157,7 +178,7 @@ pub struct Primitive {
     ilen: u32,
 }
 impl Primitive {
-    pub fn from_loader(
+    pub(super) fn from_loader(
         primitive: gltf::Primitive,
         buffers: &[gltf::buffer::Data],
         loader: &mut Loader,
@@ -165,7 +186,7 @@ impl Primitive {
         let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice()));
         let material = loader.get_material(primitive.material());
 
-        let mut vertex_data = VertexData::new(reader, material.uniform.nm_set)?;
+        let mut vertex_data = PrimitiveVertexDataBuilder::new(reader, material.uniform.nm_set)?;
         vertex_data.set_normals();
         vertex_data.set_textures_sets();
         vertex_data.set_tangents();

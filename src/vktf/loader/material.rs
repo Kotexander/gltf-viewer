@@ -42,11 +42,12 @@ impl Default for MaterialUniform {
 
 #[derive(Clone)]
 pub struct Material {
+    pub name: Option<Arc<str>>,
     pub set: Arc<DescriptorSet>,
     pub uniform: MaterialUniform,
 }
 impl Material {
-    pub fn from_loader(material: gltf::Material, loader: &mut Loader) -> Self {
+    pub(super) fn from_loader(material: gltf::Material, loader: &mut Loader) -> Self {
         let pbr = material.pbr_metallic_roughness();
 
         let mut uniform = MaterialUniform {
@@ -103,7 +104,11 @@ impl Material {
             normal,
         );
 
-        Self { set, uniform }
+        Self {
+            set,
+            uniform,
+            name: material.name().map(From::from),
+        }
     }
 
     pub fn create_set(

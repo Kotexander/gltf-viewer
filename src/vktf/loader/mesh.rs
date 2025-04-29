@@ -1,11 +1,13 @@
 use super::{Loader, primitive::Primitive};
+use std::sync::Arc;
 
 #[derive(Clone, Debug)]
 pub struct Mesh {
+    pub name: Option<Arc<str>>,
     pub primitives: Vec<Primitive>,
 }
 impl Mesh {
-    pub fn from_loader(
+    pub(super) fn from_loader(
         mesh: gltf::Mesh,
         buffers: &[gltf::buffer::Data],
         loader: &mut Loader,
@@ -27,6 +29,9 @@ impl Mesh {
             })
             .collect();
 
-        Self { primitives }
+        Self {
+            primitives,
+            name: mesh.name().map(From::from),
+        }
     }
 }

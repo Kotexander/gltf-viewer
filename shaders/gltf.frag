@@ -164,4 +164,8 @@ void main() {
     vec3 ambient = (diffuse + specular) * ao;
     vec3 color = ambient + em;
     f_color = vec4(pbr_neutral_tone_mapping(color), 1.0);
+
+    // vec3 t = normalize(tangent);
+    // vec3 b = normalize(bitangent);
+    // f_color = vec4(t / 2.0 + 0.5, 1.0);
 }
