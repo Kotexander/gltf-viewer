@@ -1,12 +1,11 @@
-use super::{Loader, material::MaterialUniform};
+use super::Loader;
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
     buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::{AutoCommandBufferBuilder, CopyBufferInfo},
-    descriptor_set::DescriptorSet,
     memory::allocator::{AllocationCreateInfo, MemoryAllocator, MemoryTypeFilter},
-    pipeline::{PipelineBindPoint, PipelineLayout, graphics::vertex_input::Vertex},
+    pipeline::graphics::vertex_input::Vertex,
 };
 
 #[repr(C)]
@@ -142,13 +141,6 @@ impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> mikktspace::Ge
         }
     }
 
-    // fn set_tangent_encoded(&mut self, tangent: [f32; 4], face: usize, vert: usize) {
-    //     self.vertices[self.indices[face * 3 + vert] as usize].tangent = tangent.into();
-    //     self.vertices[self.indices[face * 3 + vert] as usize]
-    //         .tangent
-    //         .w *= -1.0;
-    // }
-
     fn set_tangent(
         &mut self,
         tangent: [f32; 3],
@@ -171,35 +163,39 @@ impl<'a, 's, F: Clone + Fn(gltf::Buffer<'a>) -> Option<&'s [u8]>> mikktspace::Ge
 
 #[derive(Clone, Debug)]
 pub struct Primitive {
-    material_set: Arc<DescriptorSet>,
-    pub material_push: MaterialUniform,
     vbuf: Subbuffer<[PrimitiveVertex]>,
     ibuf: Subbuffer<[u32]>,
     ilen: u32,
 }
 impl Primitive {
-    pub(super) fn from_loader(
-        primitive: gltf::Primitive,
+    pub(super) fn from_loader<L>(
+        primitive: &gltf::Primitive,
         buffers: &[gltf::buffer::Data],
-        loader: &mut Loader,
+        loader: &mut Loader<L>,
     ) -> Option<Self> {
         let reader = primitive.reader(|buffer| buffers.get(buffer.index()).map(|d| d.0.as_slice()));
-        let material = loader.get_material(primitive.material());
 
-        let mut vertex_data = PrimitiveVertexDataBuilder::new(reader, material.uniform.nm_set)?;
+        let mut vertex_data = PrimitiveVertexDataBuilder::new(
+            reader,
+            primitive
+                .material()
+                .normal_texture()
+                .map(|nm| nm.tex_coord() as i32)
+                .unwrap_or(-1),
+        )?;
         vertex_data.set_normals();
         vertex_data.set_textures_sets();
         vertex_data.set_tangents();
 
         let vbuf = stage(
             loader.builder,
-            loader.allocators.mem.clone(),
+            loader.allocator.clone(),
             BufferUsage::VERTEX_BUFFER,
             vertex_data.vertices,
         );
         let ibuf = stage(
             loader.builder,
-            loader.allocators.mem.clone(),
+            loader.allocator.clone(),
             BufferUsage::INDEX_BUFFER,
             vertex_data.indices,
         );
@@ -208,26 +204,10 @@ impl Primitive {
             ilen: ibuf.len() as u32,
             vbuf,
             ibuf,
-            material_set: material.set.clone(),
-            material_push: material.uniform,
         })
     }
-    pub fn render<L>(
-        self,
-        pipeline_layout: Arc<PipelineLayout>,
-        instances: u32,
-        builder: &mut AutoCommandBufferBuilder<L>,
-    ) {
+    pub fn render<L>(self, instances: u32, builder: &mut AutoCommandBufferBuilder<L>) {
         builder
-            .bind_descriptor_sets(
-                PipelineBindPoint::Graphics,
-                pipeline_layout.clone(),
-                2,
-                self.material_set,
-            )
-            .unwrap()
-            .push_constants(pipeline_layout, 0, self.material_push)
-            .unwrap()
             .bind_vertex_buffers(0, self.vbuf)
             .unwrap()
             .bind_index_buffer(self.ibuf)

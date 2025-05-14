@@ -6,6 +6,7 @@ use set_layouts::SetLayouts;
 use skybox::Skybox;
 use std::{env::current_dir, path::PathBuf, sync::Arc};
 use viewer::Viewer;
+use vktf::material::MaterialPush;
 use vulkano::{
     buffer::{
         Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer,
@@ -286,71 +287,26 @@ impl State {
                 self.camera.ui(ui);
             });
 
-            ui.separator();
+            if let Some(info) = &mut self.viewer.renderer.info {
+                ui.separator();
 
-            ui.collapsing("Scene", |ui| {
-                egui::ScrollArea::vertical().show(ui, |ui| {
-                    for primitive in self.viewer.renderer.info.iter_mut().flat_map(|info| {
-                        info.meshes
-                            .iter_mut()
-                            .flat_map(|mesh| mesh.primatives_mut().iter_mut())
-                    }) {
-                        ui.horizontal(|ui| {
-                            let mut rgba = egui::Rgba::from_rgba_unmultiplied(
-                                primitive.material_push.bc.x,
-                                primitive.material_push.bc.y,
-                                primitive.material_push.bc.z,
-                                primitive.material_push.bc.w,
-                            );
-                            egui::color_picker::color_edit_button_rgba(
-                                ui,
-                                &mut rgba,
-                                egui::color_picker::Alpha::OnlyBlend,
-                            );
-                            primitive.material_push.bc = rgba.to_rgba_unmultiplied().into();
-                            ui.label("Base colour factor");
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut primitive.material_push.rm.x)
-                                    .range(0.0..=1.0)
-                                    .speed(0.01),
-                            );
-                            ui.label("Roughness factor");
-                        });
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut primitive.material_push.rm.y)
-                                    .range(0.0..=1.0)
-                                    .speed(0.01),
-                            );
-                            ui.label("Metallness factor");
-                        });
-
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut primitive.material_push.ao)
-                                    .range(0.0..=1.0)
-                                    .speed(0.01),
-                            );
-                            ui.label("Occlusion factor");
-                        });
-                        ui.horizontal(|ui| {
-                            let mut rgb = primitive.material_push.em.data.0[0];
-                            egui::color_picker::color_edit_button_rgb(ui, &mut rgb);
-                            primitive.material_push.em = rgb.into();
-                            ui.label("Emission factor");
-                        });
-                        ui.horizontal(|ui| {
-                            ui.add(
-                                egui::DragValue::new(&mut primitive.material_push.nm).speed(0.01),
-                            );
-                            ui.label("Normal scale");
-                        });
-                    }
+                ui.collapsing("Scene", |ui| {
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        for (name, material) in info
+                            .vktf
+                            .document
+                            .materials()
+                            .map(|m| m.name())
+                            .zip(info.materials.index.iter_mut())
+                        {
+                            ui.label(format!("{:?}", name));
+                            material_ui(ui, &mut material.push);
+                        }
+                        ui.label("Default");
+                        material_ui(ui, &mut info.materials.default.push);
+                    });
                 });
-            });
+            }
 
             ui.separator();
         });
@@ -423,4 +379,58 @@ impl State {
                 ui.painter().add(callback);
             });
     }
+}
+
+fn material_ui(ui: &mut egui::Ui, material_push: &mut MaterialPush) {
+    ui.horizontal(|ui| {
+        let mut rgba = egui::Rgba::from_rgba_unmultiplied(
+            material_push.bc.x,
+            material_push.bc.y,
+            material_push.bc.z,
+            material_push.bc.w,
+        );
+        egui::color_picker::color_edit_button_rgba(
+            ui,
+            &mut rgba,
+            egui::color_picker::Alpha::OnlyBlend,
+        );
+        material_push.bc = rgba.to_rgba_unmultiplied().into();
+        ui.label("Base colour factor");
+    });
+
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut material_push.rm.x)
+                .range(0.0..=1.0)
+                .speed(0.01),
+        );
+        ui.label("Roughness factor");
+    });
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut material_push.rm.y)
+                .range(0.0..=1.0)
+                .speed(0.01),
+        );
+        ui.label("Metallness factor");
+    });
+
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::DragValue::new(&mut material_push.ao)
+                .range(0.0..=1.0)
+                .speed(0.01),
+        );
+        ui.label("Occlusion factor");
+    });
+    ui.horizontal(|ui| {
+        let mut rgb = material_push.em.data.0[0];
+        egui::color_picker::color_edit_button_rgb(ui, &mut rgb);
+        material_push.em = rgb.into();
+        ui.label("Emission factor");
+    });
+    ui.horizontal(|ui| {
+        ui.add(egui::DragValue::new(&mut material_push.nm).speed(0.01));
+        ui.label("Normal scale");
+    });
 }

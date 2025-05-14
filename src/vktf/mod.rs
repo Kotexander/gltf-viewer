@@ -1,17 +1,14 @@
-use loader::{
-    material::MaterialUniform,
-    mesh::Mesh,
-    primitive::{Primitive, PrimitiveVertex},
-};
+use loader::{PrimitiveVertex, VktfDocument};
+use material::{MaterialPush, Materials};
+use mesh::{Instance, Mesh};
 use nalgebra_glm as glm;
 use std::sync::Arc;
 use vulkano::{
-    buffer::{Buffer, BufferContents, BufferCreateInfo, BufferUsage, Subbuffer},
     command_buffer::AutoCommandBufferBuilder,
-    descriptor_set::layout::DescriptorSetLayout,
+    descriptor_set::{allocator::DescriptorSetAllocator, layout::DescriptorSetLayout},
     device::Device,
     image::SampleCount,
-    memory::allocator::{AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator},
+    memory::allocator::MemoryAllocator,
     pipeline::{
         DynamicState, GraphicsPipeline, Pipeline, PipelineLayout, PipelineShaderStageCreateInfo,
         graphics::{
@@ -31,86 +28,48 @@ use vulkano::{
 };
 
 pub mod loader;
-
-#[repr(C)]
-#[derive(BufferContents, Vertex, Debug)]
-pub struct Instance {
-    #[format(R32G32B32A32_SFLOAT)]
-    pub model_x: [f32; 4],
-    #[format(R32G32B32A32_SFLOAT)]
-    pub model_y: [f32; 4],
-    #[format(R32G32B32A32_SFLOAT)]
-    pub model_z: [f32; 4],
-    #[format(R32G32B32A32_SFLOAT)]
-    pub model_w: [f32; 4],
-}
-impl From<glm::Mat4> for Instance {
-    fn from(value: glm::Mat4) -> Self {
-        Self {
-            model_x: value.data.0[0],
-            model_y: value.data.0[1],
-            model_z: value.data.0[2],
-            model_w: value.data.0[3],
-        }
-    }
-}
-
-#[derive(Clone)]
-pub struct InstancedMesh {
-    primitives: Vec<Primitive>,
-    instance_buffer: Subbuffer<[Instance]>,
-    // instances: Vec<glm::Mat4>,
-    len: u32,
-}
-impl InstancedMesh {
-    pub fn primatives_mut(&mut self) -> &mut [Primitive] {
-        &mut self.primitives
-    }
-}
+pub mod material;
+pub mod mesh;
 
 #[derive(Clone)]
 pub struct GltfRenderInfo {
-    pub meshes: Vec<InstancedMesh>,
+    pub meshes: Vec<Mesh>,
+    pub materials: Materials,
+    pub vktf: Arc<VktfDocument>,
 }
 impl GltfRenderInfo {
-    pub fn from_scene(
-        allocator: Arc<StandardMemoryAllocator>,
-        scene: gltf::Scene,
-        meshes: &[Mesh],
+    pub fn new_default(
+        mem_allocator: Arc<dyn MemoryAllocator>,
+        set_allocator: Arc<dyn DescriptorSetAllocator>,
+        layout: Arc<DescriptorSetLayout>,
+        vktf: VktfDocument,
     ) -> GltfRenderInfo {
-        let mut builder = GltfRenderInfoBuilder { instances: vec![] };
+        let materials = Materials::new(set_allocator, layout, &vktf);
 
+        let scene = vktf.document.default_scene().unwrap();
+        let mut builder = GltfRenderInfoBuilder { instances: vec![] };
         Self::iter_nodes(scene.nodes(), &glm::identity(), &mut builder);
 
         let meshes = builder
             .instances
             .into_iter()
             .map(|(index, instances)| {
-                let mesh = meshes[index].clone();
-                let instance_buffer = Buffer::from_iter(
-                    allocator.clone(),
-                    BufferCreateInfo {
-                        usage: BufferUsage::VERTEX_BUFFER,
-                        ..Default::default()
-                    },
-                    AllocationCreateInfo {
-                        memory_type_filter: MemoryTypeFilter::PREFER_DEVICE
-                            | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
-                        ..Default::default()
-                    },
-                    instances.iter().copied().map(Instance::from),
-                )
-                .unwrap();
-                InstancedMesh {
-                    len: instance_buffer.len() as u32,
-                    primitives: mesh.primitives.clone(),
-                    instance_buffer,
-                    // instances,
-                }
+                let primitives = vktf
+                    .document
+                    .meshes()
+                    .nth(index)
+                    .unwrap()
+                    .primitives()
+                    .zip(vktf.vktf.get_mesh(index).unwrap().iter().cloned());
+                Mesh::new(mem_allocator.clone(), primitives, instances)
             })
             .collect();
 
-        Self { meshes }
+        Self {
+            meshes,
+            materials,
+            vktf: Arc::new(vktf),
+        }
     }
     fn iter_nodes<'a>(
         nodes: impl Iterator<Item = gltf::Node<'a>>,
@@ -178,7 +137,7 @@ impl GltfPipeline {
                 push_constant_ranges: vec![PushConstantRange {
                     stages: ShaderStages::FRAGMENT,
                     offset: 0,
-                    size: std::mem::size_of::<MaterialUniform>() as u32,
+                    size: std::mem::size_of::<MaterialPush>() as u32,
                 }],
                 ..Default::default()
             },
@@ -222,17 +181,11 @@ impl GltfPipeline {
         Self { pipeline }
     }
     pub fn render<L>(&self, info: GltfRenderInfo, builder: &mut AutoCommandBufferBuilder<L>) {
-        let layout = self.pipeline.layout().clone();
         builder
             .bind_pipeline_graphics(self.pipeline.clone())
             .unwrap();
         for mesh in info.meshes {
-            builder
-                .bind_vertex_buffers(1, mesh.instance_buffer)
-                .unwrap();
-            for primitive in mesh.primitives {
-                primitive.render(layout.clone(), mesh.len, builder);
-            }
+            mesh.render(builder, &info.materials, self.pipeline.layout());
         }
     }
 }
