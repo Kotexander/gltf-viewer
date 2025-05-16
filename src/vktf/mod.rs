@@ -184,6 +184,7 @@ impl GltfPipeline {
         builder
             .bind_pipeline_graphics(self.pipeline.clone())
             .unwrap();
+        // TODO: dont rebind and repush materials when not needed
         for mesh in info.meshes {
             mesh.render(builder, &info.materials, self.pipeline.layout());
         }

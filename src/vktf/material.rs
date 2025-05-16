@@ -29,39 +29,35 @@ pub struct MaterialPush {
 impl MaterialPush {
     pub fn new(material: &gltf::Material) -> Self {
         let pbr = material.pbr_metallic_roughness();
-        Self {
+        let mut slf = Self {
             bc: pbr.base_color_factor().into(),
             em: material.emissive_factor().into(),
             rm: glm::vec2(pbr.roughness_factor(), pbr.metallic_factor()),
-            ao: material
-                .occlusion_texture()
-                .map(|ao| ao.strength())
-                .unwrap_or(1.0),
-            nm: material
-                .normal_texture()
-                .map(|nm| nm.scale())
-                .unwrap_or(1.0),
-            bc_set: pbr
-                .base_color_texture()
-                .map(|bc| bc.tex_coord() as i32)
-                .unwrap_or(-1),
-            rm_set: pbr
-                .metallic_roughness_texture()
-                .map(|rm| rm.tex_coord() as i32)
-                .unwrap_or(-1),
-            ao_set: material
-                .occlusion_texture()
-                .map(|ao| ao.tex_coord() as i32)
-                .unwrap_or(-1),
-            em_set: material
-                .emissive_texture()
-                .map(|em| em.tex_coord() as i32)
-                .unwrap_or(-1),
-            nm_set: material
-                .normal_texture()
-                .map(|nm| nm.tex_coord() as i32)
-                .unwrap_or(-1),
+            ..Default::default()
+        };
+        if let Some(ao) = material.occlusion_texture() {
+            slf.ao = ao.strength();
         }
+        if let Some(nm) = material.normal_texture() {
+            slf.nm = nm.scale();
+        }
+        if let Some(bc_set) = pbr.base_color_texture() {
+            slf.bc_set = bc_set.tex_coord() as i32;
+        }
+        if let Some(rm_set) = pbr.metallic_roughness_texture() {
+            slf.rm_set = rm_set.tex_coord() as i32;
+        }
+        if let Some(ao_set) = material.occlusion_texture() {
+            slf.ao_set = ao_set.tex_coord() as i32;
+        }
+        if let Some(em_set) = material.emissive_texture() {
+            slf.em_set = em_set.tex_coord() as i32;
+        }
+        if let Some(nm_set) = material.normal_texture() {
+            slf.nm_set = nm_set.tex_coord() as i32;
+        }
+
+        slf
     }
 }
 impl Default for MaterialPush {
@@ -146,6 +142,7 @@ fn write_descriptor_set(
 #[derive(Clone)]
 pub struct Materials {
     pub index: Vec<Material>,
+    // TODO: make default actually an option
     pub default: Material,
 }
 impl Materials {
